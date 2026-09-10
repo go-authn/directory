@@ -2,144 +2,50 @@ package ldapdir_test
 
 import (
 	"errors"
-	"fmt"
-	"net"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-authn/directory"
 	"github.com/go-authn/directory/ldapdir"
-
-	server "github.com/glauth/ldap"
+	"github.com/go-authn/directory/ldaptest"
 )
 
-// The fixture is somebody else's LDAP SERVER.
-//
-// A fake built from my own reading of the protocol could only confirm that
-// reading: if I have misunderstood how a search is answered, my fake
-// misunderstands it the same way and the test passes. glauth/ldap is an
-// independent implementation, and driving it is what makes "this reads an LDAP
-// directory" a measurement rather than an opinion.
-type fixture struct {
-	people map[string]person // by uid
-	groups map[string][]string
-}
-
-type person struct {
-	dn       string
-	password string
-	ntHash   string
-	sshKeys  []string
-}
-
-func (f *fixture) Bind(bindDN, password string, _ net.Conn) (server.LDAPResultCode, error) {
-	// The service account this server reads with, and then each person for
-	// the password check.
-	if bindDN == "cn=reader,dc=example,dc=org" && password == "let me read" {
-		return server.LDAPResultSuccess, nil
-	}
-	for _, p := range f.people {
-		if p.dn == bindDN && p.password != "" && password == p.password {
-			return server.LDAPResultSuccess, nil
-		}
-	}
-	// An empty password binds SUCCESSFULLY in a real directory -- the
-	// unauthenticated bind -- and this fixture does the same, so the test can
-	// prove the package refuses it before it ever gets here.
-	if password == "" {
-		return server.LDAPResultSuccess, nil
-	}
-	return server.LDAPResultInvalidCredentials, nil
-}
-
-func (f *fixture) Search(_ string, req server.SearchRequest, _ net.Conn) (server.ServerSearchResult, error) {
-	var entries []*server.Entry
-	switch {
-	case strings.Contains(req.Filter, "posixAccount"):
-		for uid, p := range f.people {
-			attrs := []*server.EntryAttribute{{Name: "uid", Values: []string{uid}}}
-			if p.ntHash != "" {
-				attrs = append(attrs, &server.EntryAttribute{Name: "sambaNTPassword", Values: []string{p.ntHash}})
-			}
-			if len(p.sshKeys) > 0 {
-				attrs = append(attrs, &server.EntryAttribute{Name: "sshPublicKey", Values: p.sshKeys})
-			}
-			entries = append(entries, &server.Entry{DN: p.dn, Attributes: attrs})
-		}
-	case strings.Contains(req.Filter, "posixGroup"):
-		for name, members := range f.groups {
-			if !strings.Contains(req.Filter, "cn="+name+")") {
-				continue
-			}
-			entries = append(entries, &server.Entry{
-				DN: "cn=" + name + ",ou=groups,dc=example,dc=org",
-				Attributes: []*server.EntryAttribute{
-					{Name: "memberUid", Values: members},
-				},
-			})
-		}
-	}
-	return server.ServerSearchResult{Entries: entries, ResultCode: server.LDAPResultSuccess}, nil
-}
-
-func serveLDAP(t *testing.T, f *fixture) string {
+// The directory under test is somebody else's LDAP SERVER, driven by
+// go-authn/directory/ldaptest: an independent implementation of the protocol.
+// A fake built from my own reading of it could only confirm that reading -- if
+// I have misunderstood how a search is answered, the fake misunderstands it
+// the same way and the test passes.
+func directoryUnderTest(t *testing.T) (*ldapdir.Source, *ldaptest.Server) {
 	t.Helper()
-	s := server.NewServer()
-	s.BindFunc("", f)
-	s.SearchFunc("", f)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() { _ = s.Serve(ln) }()
-	t.Cleanup(func() { ln.Close() })
-	// Bind first, announce second: the address a client dials is the one the
-	// listener got, not the one asked for.
-	addr := ln.Addr().String()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		c, err := net.Dial("tcp", addr)
-		if err == nil {
-			c.Close()
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("nothing is listening on %s", addr)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return "ldap://" + addr
-}
-
-func directoryUnderTest(t *testing.T) (*ldapdir.Source, *fixture) {
-	t.Helper()
-	f := &fixture{
-		people: map[string]person{
+	d, err := ldaptest.NewServer(&ldaptest.Directory{
+		People: map[string]ldaptest.Person{
 			// alice has everything a directory can publish.
 			"alice": {
-				dn:       "uid=alice,ou=people,dc=example,dc=org",
-				password: "hunter2",
-				ntHash:   "8846f7eaee8fb117ad06bdd830b7586c",
-				sshKeys:  []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH alice@laptop"},
+				Password: "hunter2",
+				NTHash:   "8846f7eaee8fb117ad06bdd830b7586c",
+				SSHKeys:  []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH alice@laptop"},
 			},
 			// bob has only what LDAP holds by default: a password nobody can
 			// read, which is the whole reason SMB cannot serve him.
-			"bob": {dn: "uid=bob,ou=people,dc=example,dc=org", password: "swordfish"},
+			"bob": {Password: "swordfish"},
 		},
-		groups: map[string][]string{"staff": {"alice", "bob"}, "admins": {"alice"}},
-	}
-	src, err := ldapdir.New(ldapdir.Config{
-		URL:          serveLDAP(t, f),
-		BaseDN:       "ou=people,dc=example,dc=org",
-		GroupBaseDN:  "ou=groups,dc=example,dc=org",
-		BindDN:       "cn=reader,dc=example,dc=org",
-		BindPassword: "let me read",
+		Groups: map[string][]string{"staff": {"alice", "bob"}, "admins": {"alice"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return src, f
+	t.Cleanup(func() { d.Close() })
+	src, err := ldapdir.New(ldapdir.Config{
+		URL:          d.URL,
+		BaseDN:       d.PeopleDN,
+		GroupBaseDN:  d.GroupsDN,
+		BindDN:       d.ReaderDN,
+		BindPassword: d.ReaderPassword,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return src, d
 }
 
 func TestReadingPeopleFromLDAP(t *testing.T) {
@@ -232,14 +138,16 @@ func TestADirectoryThatIsNotThere(t *testing.T) {
 	if _, err := ldapdir.New(ldapdir.Config{BaseDN: "dc=example,dc=org"}); err == nil {
 		t.Error("a config with no url was accepted")
 	}
-	f := &fixture{people: map[string]person{}}
+	d, err := ldaptest.NewServer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
 	if _, err := ldapdir.New(ldapdir.Config{
-		URL: serveLDAP(t, f), BaseDN: "dc=example,dc=org",
-		BindDN: "cn=reader,dc=example,dc=org", BindPassword: "wrong",
+		URL: d.URL, BaseDN: d.BaseDN, BindDN: d.ReaderDN, BindPassword: "wrong",
 	}); err == nil {
 		t.Error("a bad bind password was accepted")
 	}
-	_ = fmt.Sprint()
 }
 
 // A group holding DNs rather than names: groupOfNames is what a directory
@@ -247,18 +155,20 @@ func TestADirectoryThatIsNotThere(t *testing.T) {
 // against "uid=alice,ou=people,dc=example,dc=org" tells alice she is not in
 // her own group.
 func TestAGroupThatHoldsDNs(t *testing.T) {
-	f := &fixture{
-		people: map[string]person{},
-		groups: map[string][]string{"staff": {
+	d, err := ldaptest.NewServer(&ldaptest.Directory{
+		Groups: map[string][]string{"staff": {
 			"uid=alice,ou=people,dc=example,dc=org",
 			"cn=bob,ou=people,dc=example,dc=org",
 			"carol",                        // a name, in the same group
 			"not a dn = but has an equals", // and something that parses as neither
 		}},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer d.Close()
 	src, err := ldapdir.New(ldapdir.Config{
-		URL: serveLDAP(t, f), BaseDN: "ou=people,dc=example,dc=org",
-		GroupBaseDN: "ou=groups,dc=example,dc=org",
+		URL: d.URL, BaseDN: d.PeopleDN, GroupBaseDN: d.GroupsDN,
 	})
 	if err != nil {
 		t.Fatal(err)

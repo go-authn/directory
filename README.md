@@ -47,12 +47,73 @@ holding it authenticates as that person exactly as if they held the password.
 | `directory` | a `Static` list you build | **none** |
 | `directory/sqldir` | any `*sql.DB`, with **your** queries | none — the driver is yours to pick |
 | `directory/ldapdir` | an LDAP server | `go-ldap/ldap/v3` |
+| `directory/hcldir` | a `users` block from a configuration file | none — the struct tags are inert |
+| `directory/ldaptest` | *(an LDAP directory to test against)* | `glauth/ldap` |
 
 `sqldir` takes queries rather than a schema, because a site whose people are
 already in a database has them in *its* shape; a schema this package invented
 would mean copying them into a second one that goes stale. It takes an
 `*sql.DB` rather than a DSN, so a program that wants SQLite does not carry
 PostgreSQL.
+
+## The `users` block
+
+Two programs had written the same block — a file server deciding who may mount
+a share, and an authentication server answering for them both — so it lives
+here once:
+
+```hcl
+users "sql" {
+  driver   = "postgres"               # or sqlite, or mysql
+  dsn_file = "/etc/authnd/dsn"        # a DSN holds a password: it lives in a file
+  users    = "select login, nt_hash, ssh_keys from staff"
+  groups   = "select team, member from team_members"
+}
+
+users "ldap" {
+  url                = "ldaps://ldap.example.org"
+  base_dn            = "ou=people,dc=example,dc=org"
+  bind_dn            = "cn=reader,dc=example,dc=org"
+  bind_password_file = "/etc/authnd/bind.pw"
+}
+```
+
+```go
+src, err := hcldir.Open(block)      // or hcldir.OpenAll(blocks)
+```
+
+`hcldir` imports **no HCL library**: the struct tags are inert strings, so the
+caller decodes — with `gohcl`, or by hand — and hands the block over. Nor does
+it import a database driver: a program blank-imports the ones it wants, and a
+binary that imported none is told exactly that rather than "unknown driver",
+because the fix is one line in the program and not in the configuration.
+
+Two build tags leave a kind out entirely: `-tags nosql` and `-tags noldap`. For
+the program that uses this, `nosql` is usually the biggest single lever it has
+— the three database drivers weigh about 12 MB.
+
+## Testing against a directory
+
+`directory/ldaptest` is an LDAP server to test against, since three packages
+had written the same fixture and one of them is a file server in another
+organisation:
+
+```go
+d, _ := ldaptest.NewServer(&ldaptest.Directory{
+    People: map[string]ldaptest.Person{
+        "dora": {Password: "hunter2", NTHash: hex.EncodeToString(directory.NTHashOf("hunter2"))},
+        "eli":  {Password: "swordfish"},   // a bind, and nothing else
+    },
+    Groups: map[string][]string{"engineers": {"dora", "eli"}},
+})
+defer d.Close()
+```
+
+It is `glauth/ldap` underneath — an independent implementation — and it is
+itself read by **OpenLDAP's own `ldapsearch`** in CI, because a fixture built
+from one reading of a protocol can only ever confirm that reading. `d.Binds()`
+counts binds, so "this password was checked against the directory" is something
+a test can show rather than assume.
 
 ## Groups
 
@@ -100,6 +161,10 @@ holding the secret this package went out of its way not to hold.
   confirm that reading. The fixture deliberately allows the **unauthenticated
   bind** (an empty password, which a real directory answers with *success*), so
   the test fails if this package ever stops refusing it first.
+- **`ldaptest`** — the fixture itself — against **OpenLDAP's `ldapsearch`**,
+  which knows nothing about this module: it reads the entries, the
+  `sambaNTPassword` of the one person who has it, and the group; it binds as a
+  person and is refused with *Invalid credentials (49)* for a wrong password.
 
 ## Licence
 
