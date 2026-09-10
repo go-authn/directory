@@ -113,6 +113,18 @@ insert into teams values ('engineers', 'dora');
 	if err != nil || len(members) != 1 || members[0] != "dora" {
 		t.Errorf("Members(engineers) = %v, %v", members, err)
 	}
+	// ⛔ And it can still LIST them. Opening a block wraps the source so the
+	// database is closed with it, and a wrapper embedding the Source
+	// INTERFACE silently drops every optional interface the concrete type had
+	// -- which is how a server that publishes this directory came to publish
+	// no groups, with nothing anywhere saying why.
+	lister, ok := src.(directory.GroupLister)
+	if !ok {
+		t.Fatal("the opened source cannot list its groups: the wrapper dropped GroupLister")
+	}
+	if names, err := lister.GroupNames(); err != nil || len(names) != 1 || names[0] != "engineers" {
+		t.Errorf("GroupNames() = %v, %v", names, err)
+	}
 
 	// The database is closed with the source, because this package opened it.
 	c, ok := src.(interface{ Close() error })
@@ -309,6 +321,15 @@ func TestAnLDAPBlockReadsADirectory(t *testing.T) {
 	}
 	if members, err := src.Members("engineers"); err != nil || len(members) != 2 {
 		t.Errorf("Members(engineers) = %v, %v", members, err)
+	}
+	// The LDAP source is not wrapped today, and it still has to be able to
+	// list: what a block opens is what a server publishes, whichever kind.
+	lister, ok := src.(directory.GroupLister)
+	if !ok {
+		t.Fatal("the opened source cannot list its groups")
+	}
+	if names, err := lister.GroupNames(); err != nil || len(names) != 1 || names[0] != "engineers" {
+		t.Errorf("GroupNames() = %v, %v", names, err)
 	}
 	// A bind really happened, rather than a comparison somewhere in here.
 	if d.Binds() < 2 {
