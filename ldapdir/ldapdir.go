@@ -28,6 +28,7 @@ package ldapdir
 import (
 	"crypto/tls"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/go-authn/directory"
@@ -82,6 +83,16 @@ type Source struct {
 func New(cfg Config) (*Source, error) {
 	if cfg.URL == "" || cfg.BaseDN == "" {
 		return nil, fmt.Errorf("ldapdir: a url and a base_dn are needed")
+	}
+	// ldap://cn=reader:secret@host is a valid URL and an unrecoverable
+	// mistake: this one is printed by [Source.Describe], by every error
+	// below, and then by whatever the caller logs those into. Refused rather
+	// than redacted, because redaction is a promise every line that prints it
+	// would have to keep, and this package cannot keep it on their behalf.
+	//
+	// The refusal does not quote the URL, for the same reason.
+	if u, err := url.Parse(cfg.URL); err == nil && u.User != nil {
+		return nil, fmt.Errorf("ldapdir: the url carries credentials in it, and a URL is printed: give BindDN and BindPassword instead")
 	}
 	if cfg.TLS == nil {
 		cfg.TLS = &tls.Config{MinVersion: tls.VersionTLS12}
