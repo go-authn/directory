@@ -72,6 +72,14 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with: { go-version: stable, check-latest: true, cache: true }
+      # ⛔ The judge belongs in every lane that RUNS the tests, not only the
+      # one named "test". It was in that one alone here, so every test driving
+      # OpenLDAP's client skipped in the race and coverage lanes -- silently,
+      # since a skip is not a failure -- and the coverage number was measured
+      # without them. Found next door in go-authn/authnd, where the same gap
+      # cost 12 points and a red lane.
+      - name: ldap-utils
+        run: sudo apt-get update && sudo apt-get install -y ldap-utils
       - run: go test -race -count=1 ./...
 
   coverage:
@@ -81,6 +89,14 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with: { go-version: stable, check-latest: true, cache: true }
+      # ⛔ The judge belongs in every lane that RUNS the tests, not only the
+      # one named "test". It was in that one alone here, so every test driving
+      # OpenLDAP's client skipped in the race and coverage lanes -- silently,
+      # since a skip is not a failure -- and the coverage number was measured
+      # without them. Found next door in go-authn/authnd, where the same gap
+      # cost 12 points and a red lane.
+      - name: ldap-utils
+        run: sudo apt-get update && sudo apt-get install -y ldap-utils
       - run: |
           FLOOR=85.0
           go test -coverprofile=cover.out -coverpkg=./... ./... >/dev/null
