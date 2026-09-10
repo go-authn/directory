@@ -1,0 +1,4 @@
+# Ignore by SHAPE, not by name: a rule that names one artefact is a rule that
+# has met one artefact.
+/cover.out
+*.test
