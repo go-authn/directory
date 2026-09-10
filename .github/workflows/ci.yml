@@ -29,6 +29,13 @@ jobs:
           go-version: stable
           check-latest: true
           cache: true
+      # OpenLDAP's own client, as a judge for the LDAP directory this module
+      # tests against: a fixture read only by the client in this same module
+      # could confirm a misreading of the protocol rather than the protocol.
+      # macOS ships it; Windows has none, and those tests skip there.
+      - name: ldap-utils
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y ldap-utils
       - run: go vet ./...
       - name: gofmt
         if: matrix.os == 'ubuntu-latest'
@@ -39,6 +46,22 @@ jobs:
             echo "::error::these files are not gofmt-clean:"; echo "$unformatted"; exit 1
           fi
       - run: go test -count=1 ./...
+
+  tags:
+    name: build tags (${{ matrix.tags }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tags: [nosql, noldap, "nosql,noldap"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with: { go-version: stable, check-latest: true, cache: true }
+      # hcldir carries the tags a PROGRAM uses to leave out a database driver
+      # or an LDAP client. They have to keep building here, or the program
+      # that sets them finds out instead.
+      - run: go build -tags "${{ matrix.tags }}" ./... && go vet -tags "${{ matrix.tags }}" ./...
 
   race:
     name: race detector
