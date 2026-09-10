@@ -29,6 +29,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/go-authn/directory"
@@ -221,6 +222,31 @@ func (s *Source) bindAs(dn string) func(string) error {
 }
 
 // Members expands a group.
+// GroupNames is every group under the group base, by the same filter Members
+// uses -- without the name, which is the only difference between asking about
+// one group and asking for all of them.
+func (s *Source) GroupNames() ([]string, error) {
+	c, err := s.dial()
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+
+	res, err := c.Search(ldap.NewSearchRequest(
+		s.cfg.GroupBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+		s.cfg.GroupFilter, []string{s.cfg.GroupAttribute}, nil,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("ldapdir: listing the groups under %s: %w", s.cfg.GroupBaseDN, err)
+	}
+	var names []string
+	for _, e := range res.Entries {
+		names = append(names, e.GetAttributeValues(s.cfg.GroupAttribute)...)
+	}
+	slices.Sort(names)
+	return slices.Compact(names), nil
+}
+
 func (s *Source) Members(group string) ([]string, error) {
 	c, err := s.dial()
 	if err != nil {

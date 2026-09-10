@@ -124,6 +124,13 @@ which anybody administering a file server types without being told:
 allowed, err := directory.Expand([]string{"@staff", "alice"}, people)
 ```
 
+Listing the groups is a **different question** from asking about one, and a
+source may answer the second and not the first — an LDAP directory can permit
+a lookup and refuse an enumeration. So `Set.GroupNames()` reads the sources
+that *can* list (the optional `GroupLister`) and skips the rest: a server
+publishing a list of groups can honestly publish fewer than `Members` would
+answer for, and a server checking membership keeps asking `Members`.
+
 A group with **nobody in it** is refused rather than expanded to nothing: a
 configuration that grants nothing to nobody reads exactly like one that works.
 A group **no source has** is an error, not an empty list, for the same reason —
