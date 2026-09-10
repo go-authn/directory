@@ -64,8 +64,15 @@ jobs:
           go tool cover -func=cover.out
           cov=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
           echo "coverage: ${cov}%  floor: ${FLOOR}%  standard: 100%"
-          awk -v c="$cov" -v f="$FLOOR" 'BEGIN{exit !(c+0 < f+0)}' && {
-            echo "::error::coverage ${cov}% fell below the recorded floor ${FLOOR}%"; exit 1; }
+          # Written as an `if` rather than `awk ... && { ... }`: in that form
+          # the LIST's status is awk's, and when it is the last line of the
+          # script the step inherits it -- so a lane that is comfortably above
+          # its floor fails, saying nothing about why. It cost a run here.
+          if awk -v c="$cov" -v f="$FLOOR" 'BEGIN{exit !(c+0 < f+0)}'; then
+            echo "::error::coverage ${cov}% fell below the recorded floor ${FLOOR}%"
+            exit 1
+          fi
+          awk -v c="$cov" 'BEGIN{if (c+0 < 100) printf "::warning::%.1f points short of the 100%% standard\n", 100-c}'
 
   arches:
     name: arch ${{ matrix.goarch }}
