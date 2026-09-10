@@ -55,6 +55,13 @@ type Config struct {
 	UserFilter    string // default (objectClass=posixAccount)
 	UserAttribute string // default uid
 
+	// TOTPAttribute is where a one-time-code secret lives, in base32. It has
+	// NO default on purpose: there is no standard attribute for it -- FreeIPA
+	// has ipatokenOTPkey, other schemas have oathSecret or something local --
+	// and a default that guessed wrong would read nothing while looking like
+	// it had looked.
+	TOTPAttribute string
+
 	GroupBaseDN     string // default: BaseDN
 	GroupFilter     string // default (objectClass=posixGroup)
 	GroupAttribute  string // default cn
@@ -154,7 +161,7 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 	res, err := c.Search(ldap.NewSearchRequest(
 		s.cfg.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
 		s.cfg.UserFilter,
-		[]string{s.cfg.UserAttribute, "sambaNTPassword", "sshPublicKey"},
+		s.attributes(),
 		nil,
 	))
 	if err != nil {
@@ -181,6 +188,19 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 				opts = append(opts, directory.WithPublicKeys(k))
 			}
 		}
+		if s.cfg.TOTPAttribute != "" {
+			if v := strings.TrimSpace(e.GetAttributeValue(s.cfg.TOTPAttribute)); v != "" {
+				secret, err := directory.ParseTOTPSecret(v)
+				if err != nil {
+					// Named, not quoted: the attribute holds a credential. And
+					// refused rather than dropped, because dropping it turns
+					// "this person has a second factor" into "this person has
+					// none" without a word.
+					return nil, fmt.Errorf("ldapdir: %s: %s: %w", name, s.cfg.TOTPAttribute, err)
+				}
+				opts = append(opts, directory.WithTOTPSecret(secret))
+			}
+		}
 		// The password is never read: the directory holds it and will not give
 		// it up, which is the point of a directory. What it will do is answer
 		// "is this it", one bind at a time.
@@ -188,6 +208,17 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 		out = append(out, directory.NewIdentity(name, opts...))
 	}
 	return out, nil
+}
+
+// attributes is what to ask the directory for: the name, the two credentials
+// this package knows the standard spelling of, and the one whose spelling the
+// caller had to supply.
+func (s *Source) attributes() []string {
+	attrs := []string{s.cfg.UserAttribute, "sambaNTPassword", "sshPublicKey"}
+	if s.cfg.TOTPAttribute != "" {
+		attrs = append(attrs, s.cfg.TOTPAttribute)
+	}
+	return attrs
 }
 
 // bindAs is the password check: a bind, on its OWN connection.

@@ -1,6 +1,7 @@
 package sqldir_test
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"strings"
@@ -146,12 +147,15 @@ func TestQueriesThatCannotWork(t *testing.T) {
 	if _, err := sqldir.New(db, sqldir.Queries{}); err == nil {
 		t.Error("a source with no people query was accepted")
 	}
-	src, err := sqldir.New(db, sqldir.Queries{People: `select name, password, nt_hash, ssh_keys, name from people`})
+	// Six columns is one more than there are credentials to fill.
+	src, err := sqldir.New(db, sqldir.Queries{
+		People: `select name, password, nt_hash, ssh_keys, name, name from people`,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := src.Identities(); err == nil || !strings.Contains(err.Error(), "up to 4") {
-		t.Errorf("a query with five columns gave %v", err)
+	if _, err := src.Identities(); err == nil || !strings.Contains(err.Error(), "up to 5") {
+		t.Errorf("a query with six columns gave %v", err)
 	}
 	// A hash that is not 16 bytes fails the READ, so a server does not start
 	// and then refuse that person for no visible reason.
@@ -208,5 +212,60 @@ func TestGroupNamesReportsABrokenQuery(t *testing.T) {
 	}
 	if _, err := src.GroupNames(); err == nil {
 		t.Error("a query that cannot run was read as no groups")
+	}
+}
+
+// A fifth column: the secret behind a one-time code.
+func TestAOneTimeCodeSecretFromADatabase(t *testing.T) {
+	db := withDB(t)
+	if _, err := db.Exec(`alter table people add column totp_secret text`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`update people set totp_secret = 'JBSWY3DPEHPK3PXP' where name = 'alice'`); err != nil {
+		t.Fatal(err)
+	}
+	src, err := sqldir.New(db, sqldir.Queries{
+		People: "select name, password, nt_hash, ssh_keys, totp_secret from people",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := src.Identities()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen int
+	for _, id := range ids {
+		switch id.Name() {
+		case "alice":
+			seen++
+			if !id.Can(directory.TOTPSecret) {
+				t.Error("alice's second factor did not arrive")
+			}
+			want, _ := directory.ParseTOTPSecret("JBSWY3DPEHPK3PXP")
+			if got := id.TOTPSecret(); !bytes.Equal(got, want) {
+				t.Errorf("alice's secret = %v", got)
+			}
+		default:
+			// A NULL column is a person with no second factor, which is a
+			// legitimate state and not an error.
+			if id.Can(directory.TOTPSecret) {
+				t.Errorf("%s has a second factor and the column was NULL", id.Name())
+			}
+		}
+	}
+	if seen != 1 {
+		t.Error("alice was not read")
+	}
+
+	// A secret that does not parse is REFUSED, not dropped: dropping it turns
+	// "this person has a second factor" into "this person has none".
+	if _, err := db.Exec(`update people set totp_secret = 'not base 32!' where name = 'bob'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.Identities(); err == nil {
+		t.Error("a secret that is not base32 was read as no secret")
+	} else if strings.Contains(err.Error(), "not base 32") {
+		t.Errorf("the error quotes the secret: %v", err)
 	}
 }

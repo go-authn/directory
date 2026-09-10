@@ -1,8 +1,10 @@
 package directory
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -117,6 +119,71 @@ func TestAMangledNTHashIsRefused(t *testing.T) {
 	for _, tc := range []string{"", "zz", "8846f7eaee8fb117ad06bdd830b758", "8846f7eaee8fb117ad06bdd830b7586c00", "not hex at all!!"} {
 		if _, err := ParseNTHash(tc); err == nil {
 			t.Errorf("%q was accepted as an NT hash", tc)
+		}
+	}
+}
+
+// A one-time-code secret is a credential like the others: a source can hold
+// it, Can() reports it, and it is handed out as a copy.
+func TestATOTPSecretIsACredential(t *testing.T) {
+	secret := []byte{1, 2, 3, 4, 5}
+	id := NewIdentity("dora", WithPassword("hunter2"), WithTOTPSecret(secret))
+	if !id.Can(TOTPSecret) {
+		t.Error("dora has a one-time-code secret and Can says otherwise")
+	}
+	got := id.TOTPSecret()
+	if !bytes.Equal(got, secret) {
+		t.Errorf("TOTPSecret() = %v", got)
+	}
+	// A copy: what the caller does with it cannot change what the directory
+	// said, and cannot change it for the next caller either.
+	got[0] = 99
+	if again := id.TOTPSecret(); again[0] != 1 {
+		t.Error("the secret handed out is the one held")
+	}
+	// The source is not changed underneath us either.
+	secret[1] = 99
+	if again := id.TOTPSecret(); again[1] != 2 {
+		t.Error("the identity kept a reference to the caller's slice")
+	}
+
+	// ⛔ A second factor is not a first: somebody with ONLY a code secret
+	// cannot be authenticated by anything else here, and Can says exactly that.
+	only := NewIdentity("eli", WithTOTPSecret(secret))
+	if only.Can(Password) || only.Can(NTHash) || only.Can(Verifier) || only.Can(PublicKeys) {
+		t.Error("a one-time-code secret was read as some other credential")
+	}
+	if !only.Can(TOTPSecret) {
+		t.Error("eli's secret is not reported")
+	}
+	// And somebody without one says so, rather than returning an empty secret
+	// that would verify nothing while looking like a credential.
+	none := NewIdentity("frank", WithPassword("x"))
+	if none.Can(TOTPSecret) || none.TOTPSecret() != nil {
+		t.Error("frank has no second factor and something said he does")
+	}
+	if got := TOTPSecret.String(); got != "a one-time-code secret" {
+		t.Errorf("the credential is named %q", got)
+	}
+}
+
+// The base32 a directory stores, read as people copy it.
+func TestParsingAOneTimeCodeSecret(t *testing.T) {
+	want, err := ParseTOTPSecret("JBSWY3DPEHPK3PXP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, spelling := range []string{"jbswy3dpehpk3pxp", "JBSW Y3DP EHPK 3PXP", "JBSW-Y3DP-EHPK-3PXP", " JBSWY3DPEHPK3PXP "} {
+		got, err := ParseTOTPSecret(spelling)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Errorf("%q: %v, %v", spelling, got, err)
+		}
+	}
+	for _, bad := range []string{"not base 32!", "", "   ", "========"} {
+		if _, err := ParseTOTPSecret(bad); err == nil {
+			t.Errorf("%q was accepted as a secret", bad)
+		} else if strings.Contains(err.Error(), "not base 32") {
+			t.Errorf("the refusal quotes the secret: %q", err)
 		}
 	}
 }

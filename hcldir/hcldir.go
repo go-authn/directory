@@ -72,7 +72,12 @@ type Block struct {
 	GroupBaseDN      string `hcl:"group_base_dn,optional"`
 	GroupFilter      string `hcl:"group_filter,optional"`
 	GroupAttribute   string `hcl:"group_attribute,optional"`
-	MemberAttribute  string `hcl:"group_member_attribute,optional"`
+	// TOTPAttribute is where a one-time-code secret lives, in base32. There
+	// is no standard attribute for it -- FreeIPA has ipatokenOTPkey, other
+	// schemas have oathSecret -- so it has no default: a guess would read
+	// nothing while looking like it had looked.
+	TOTPAttribute   string `hcl:"totp_attribute,optional"`
+	MemberAttribute string `hcl:"group_member_attribute,optional"`
 
 	// StartTLS upgrades a plaintext LDAP connection before binding. A
 	// directory reached over ldap:// without it sends the bind password in the

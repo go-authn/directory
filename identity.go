@@ -4,6 +4,7 @@ package directory
 
 import (
 	"crypto/subtle"
+	"encoding/base32"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ type Identity struct {
 	ntHash   []byte
 	verify   func(password string) error
 	keys     []string
+	totp     []byte
 }
 
 // A Credential is one way of proving somebody. They are named so that a server
@@ -46,11 +48,18 @@ const (
 	Verifier
 	// PublicKeys are SSH public keys, in authorized_keys spelling.
 	PublicKeys
+	// TOTPSecret is the shared secret behind the six digits on a phone (RFC
+	// 6238). It is a SECOND factor and never a first: it proves the person
+	// holds the thing it was enrolled into, and says nothing about who they
+	// are. A server asking for two factors needs to know who has one — which
+	// is the same question Can() answers for every other credential.
+	TOTPSecret
 )
 
 var credentialNames = map[Credential]string{
 	Password: "a password", NTHash: "an NT hash",
 	Verifier: "a password check", PublicKeys: "public keys",
+	TOTPSecret: "a one-time-code secret",
 }
 
 func (c Credential) String() string {
@@ -101,6 +110,17 @@ func WithPublicKeys(keys ...string) Option {
 	return func(i *Identity) { i.keys = append(i.keys, keys...) }
 }
 
+// WithTOTPSecret gives the shared secret behind a one-time code (RFC 6238), as
+// the raw bytes — github.com/go-authn/totp's ParseSecret reads the base32
+// spelling a directory usually stores.
+//
+// ⛔ It is the credential, not a hash of one: anybody holding it produces every
+// future code, and it does not expire. A source that publishes it has
+// published the second factor, exactly as with an NT hash.
+func WithTOTPSecret(secret []byte) Option {
+	return func(i *Identity) { i.totp = append([]byte(nil), secret...) }
+}
+
 // WithGroups says which groups this person is in, when the source knows
 // without being asked.
 func WithGroups(groups ...string) Option {
@@ -124,6 +144,14 @@ func (i *Identity) Groups() []string { return slices.Clone(i.groups) }
 // Keys are their SSH public keys, in authorized_keys spelling.
 func (i *Identity) Keys() []string { return slices.Clone(i.keys) }
 
+// TOTPSecret is the shared secret behind this person's one-time codes, or nil.
+//
+// ⛔ Like [Identity.NTKey], this hands out a credential: whoever holds it
+// produces every future code. It is here because a server that must CHECK a
+// code has to have it, and a copy is returned so that the caller cannot change
+// what a directory said.
+func (i *Identity) TOTPSecret() []byte { return slices.Clone(i.totp) }
+
 // Can reports whether this identity carries a given credential — which is what
 // lets a server say "you can use WebDAV and not SMB" before somebody finds out
 // the hard way.
@@ -137,6 +165,8 @@ func (i *Identity) Can(c Credential) bool {
 		return i.verify != nil || i.password != ""
 	case PublicKeys:
 		return len(i.keys) > 0
+	case TOTPSecret:
+		return len(i.totp) > 0
 	}
 	return false
 }
@@ -206,6 +236,32 @@ func ParseNTHash(s string) ([]byte, error) {
 	}
 	if len(raw) != 16 {
 		return nil, fmt.Errorf("directory: an NT hash is 16 bytes, not %d", len(raw))
+	}
+	return raw, nil
+}
+
+// ParseTOTPSecret reads the base32 a directory stores a one-time-code secret
+// as: upper or lower case, spaces and padding optional, which is how people
+// copy them out of an authenticator.
+//
+// github.com/go-authn/totp reads the same shape and neither package imports
+// the other: this one is about who somebody IS, that one is about one way of
+// checking, and a dependency either way would make every consumer of one
+// carry the other. Eight lines of encoding/base32 is the cheaper of the two
+// prices, and it is written down here so that the next reader knows it was a
+// choice.
+func ParseTOTPSecret(s string) ([]byte, error) {
+	clean := strings.ToUpper(strings.NewReplacer(" ", "", "-", "", "\t", "").Replace(strings.TrimSpace(s)))
+	if pad := len(clean) % 8; pad != 0 {
+		clean += strings.Repeat("=", 8-pad)
+	}
+	raw, err := base32.StdEncoding.DecodeString(clean)
+	if err != nil {
+		// Not quoting it: it is the credential.
+		return nil, fmt.Errorf("directory: a one-time-code secret is base32")
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("directory: an empty one-time-code secret")
 	}
 	return raw, nil
 }

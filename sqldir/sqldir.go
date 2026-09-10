@@ -38,9 +38,9 @@ import (
 // Queries are the two statements this package runs.
 //
 // People must return, in this order: a name, and then any of a password, an NT
-// hash, and SSH keys. A column that is NULL is a credential that person does
-// not have, which decides which protocols they can use — see
-// [github.com/go-authn/directory.Identity.Can].
+// hash, SSH keys, and a one-time-code secret. A column that is NULL is a
+// credential that person does not have, which decides which protocols they can
+// use — see [github.com/go-authn/directory.Identity.Can].
 //
 // Groups must return a group name and a member name, one row per membership.
 type Queries struct {
@@ -109,10 +109,10 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 	var out []*directory.Identity
 	for rows.Next() {
 		var name string
-		var password, ntHash, keys sql.NullString
-		fields := []any{&name, &password, &ntHash, &keys}
+		var password, ntHash, keys, totp sql.NullString
+		fields := []any{&name, &password, &ntHash, &keys, &totp}
 		if len(cols) > len(fields) {
-			return nil, fmt.Errorf("sqldir: the people query returns %d columns; it may return up to %d: name, password, nt_hash, ssh_keys", len(cols), len(fields))
+			return nil, fmt.Errorf("sqldir: the people query returns %d columns; it may return up to %d: name, password, nt_hash, ssh_keys, totp_secret", len(cols), len(fields))
 		}
 		if err := rows.Scan(fields[:len(cols)]...); err != nil {
 			return nil, fmt.Errorf("sqldir: reading a person: %w", err)
@@ -144,6 +144,17 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 					opts = append(opts, directory.WithPublicKeys(line))
 				}
 			}
+		}
+		if totp.Valid && strings.TrimSpace(totp.String) != "" {
+			secret, err := directory.ParseTOTPSecret(totp.String)
+			if err != nil {
+				// Named, not quoted: the column holds a credential. A secret
+				// that does not parse is refused rather than dropped, because
+				// dropping it turns "this person has a second factor" into
+				// "this person has none" without a word.
+				return nil, fmt.Errorf("sqldir: %s: %w", name, err)
+			}
+			opts = append(opts, directory.WithTOTPSecret(secret))
 		}
 		out = append(out, directory.NewIdentity(name, opts...))
 	}
