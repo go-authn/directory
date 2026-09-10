@@ -275,3 +275,23 @@ func TestAGroupThatHoldsDNs(t *testing.T) {
 		t.Error("a source with no description")
 	}
 }
+
+// A URL is printed -- by Describe, by errors, by callers' logs -- so one
+// carrying a password is refused before anything can print it.
+func TestAURLWithAPasswordInItIsRefused(t *testing.T) {
+	_, err := ldapdir.New(ldapdir.Config{
+		URL:    "ldap://cn=reader:hunter2@127.0.0.1:389",
+		BaseDN: "ou=people,dc=example,dc=org",
+	})
+	if err == nil {
+		t.Fatal("a url carrying a password was accepted")
+	}
+	if !strings.Contains(err.Error(), "carries credentials") {
+		t.Errorf("the refusal reads %q", err)
+	}
+	// And the refusal itself does not repeat the secret, which would defeat
+	// the whole point of refusing.
+	if strings.Contains(err.Error(), "hunter2") {
+		t.Error("the refusal printed the password it was refusing")
+	}
+}
