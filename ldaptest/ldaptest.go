@@ -55,6 +55,10 @@ type Person struct {
 	NTHash string
 	// SSHKeys are sshPublicKey values, in authorized_keys spelling.
 	SSHKeys []string
+	// TOTPSecret is a one-time-code secret in base32, published under
+	// whatever attribute name the test asks for -- there is no standard one.
+	// It goes out under "oathSecret" unless Extra says otherwise.
+	TOTPSecret string
 	// Extra are any other attributes, for a schema that names things
 	// differently.
 	Extra map[string][]string
@@ -208,6 +212,9 @@ func (s *Server) Search(_ string, req server.SearchRequest, _ net.Conn) (server.
 			}
 			if len(p.SSHKeys) > 0 {
 				attrs = append(attrs, &server.EntryAttribute{Name: "sshPublicKey", Values: p.SSHKeys})
+			}
+			if p.TOTPSecret != "" {
+				attrs = append(attrs, &server.EntryAttribute{Name: "oathSecret", Values: []string{p.TOTPSecret}})
 			}
 			for name, values := range p.Extra {
 				attrs = append(attrs, &server.EntryAttribute{Name: name, Values: values})

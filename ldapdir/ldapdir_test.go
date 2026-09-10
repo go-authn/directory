@@ -1,6 +1,7 @@
 package ldapdir_test
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -215,5 +216,89 @@ func TestGroupNamesFromLDAP(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "admins,staff" {
 		t.Errorf("GroupNames() = %v", names)
+	}
+}
+
+// The attribute a one-time-code secret lives in has no standard name, so it
+// is read only when the caller says which -- and a caller who says nothing
+// reads nothing, rather than a guess that quietly finds nothing.
+func TestAOneTimeCodeSecretFromLDAP(t *testing.T) {
+	d, err := ldaptest.NewServer(&ldaptest.Directory{
+		People: map[string]ldaptest.Person{
+			"dora": {Password: "hunter2", TOTPSecret: "JBSWY3DPEHPK3PXP"},
+			"eli":  {Password: "swordfish"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	told, err := ldapdir.New(ldapdir.Config{
+		URL: d.URL, BaseDN: d.PeopleDN, BindDN: d.ReaderDN, BindPassword: d.ReaderPassword,
+		TOTPAttribute: "oathSecret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := told.Identities()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		switch id.Name() {
+		case "dora":
+			if !id.Can(directory.TOTPSecret) {
+				t.Error("dora's second factor did not arrive")
+			}
+			want, _ := directory.ParseTOTPSecret("JBSWY3DPEHPK3PXP")
+			if !bytes.Equal(id.TOTPSecret(), want) {
+				t.Error("dora's secret is not the one the directory holds")
+			}
+		case "eli":
+			if id.Can(directory.TOTPSecret) {
+				t.Error("eli has a second factor and the directory published none")
+			}
+		}
+	}
+
+	// Not told which attribute: nothing is read, and nothing pretends
+	// otherwise.
+	untold, err := ldapdir.New(ldapdir.Config{
+		URL: d.URL, BaseDN: d.PeopleDN, BindDN: d.ReaderDN, BindPassword: d.ReaderPassword,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err = untold.Identities()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		if id.Can(directory.TOTPSecret) {
+			t.Errorf("%s came back with a secret from an attribute nobody named", id.Name())
+		}
+	}
+
+	// An attribute holding something that is not base32 is refused, naming
+	// the person and the attribute and not the value.
+	bad, err := ldaptest.NewServer(&ldaptest.Directory{
+		People: map[string]ldaptest.Person{"dora": {Password: "x", TOTPSecret: "not base 32!"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bad.Close()
+	src, err := ldapdir.New(ldapdir.Config{
+		URL: bad.URL, BaseDN: bad.PeopleDN, BindDN: bad.ReaderDN, BindPassword: bad.ReaderPassword,
+		TOTPAttribute: "oathSecret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.Identities(); err == nil {
+		t.Error("a secret that is not base32 was read as no secret")
+	} else if !strings.Contains(err.Error(), "oathSecret") || strings.Contains(err.Error(), "not base 32") {
+		t.Errorf("the error reads %q", err)
 	}
 }

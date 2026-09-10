@@ -29,6 +29,7 @@ design choice.
 | **NTLMv2** (SMB, Windows file sharing) | the password, or **MD4(UTF16LE(password))** — the "NT hash" | a password you hold, or `sambaNTPassword` |
 | **HTTP Basic**, and anything that hands the server the password | any verifier | a comparison, a hash, or an **LDAP bind** |
 | **SSH** | a public key or a certificate | `sshPublicKey`, or a column |
+| **a second factor** (RFC 6238) | the shared secret behind the six digits | a column, or an attribute you name |
 
 NTLMv2 is a challenge-response: the client never sends the password, so the
 server computes `MD4(UTF16LE(password))` itself. **An LDAP bind cannot
@@ -49,6 +50,15 @@ holding it authenticates as that person exactly as if they held the password.
 | `directory/ldapdir` | an LDAP server | `go-ldap/ldap/v3` |
 | `directory/hcldir` | a `users` block from a configuration file | none — the struct tags are inert |
 | `directory/ldaptest` | *(an LDAP directory to test against)* | `glauth/ldap` |
+
+A one-time-code secret is a credential like the others — `Can(TOTPSecret)`,
+`Identity.TOTPSecret()` — and like the NT hash it **is** the credential:
+whoever holds it produces every future code. `sqldir` reads it from a fifth
+column; `ldapdir` reads it from an attribute you name, with **no default**,
+because there is no standard one (FreeIPA has `ipatokenOTPkey`, other schemas
+have `oathSecret`) and a guess would read nothing while looking like it had
+looked. [go-authn/totp](https://github.com/go-authn/totp) is what checks a code
+against it.
 
 `sqldir` takes queries rather than a schema, because a site whose people are
 already in a database has them in *its* shape; a schema this package invented
