@@ -184,12 +184,20 @@ func (s *Server) Search(_ string, req server.SearchRequest, _ net.Conn) (server.
 	switch {
 	case strings.Contains(req.Filter, "posixGroup"):
 		for name, members := range s.d.Groups {
-			if !strings.Contains(req.Filter, "cn="+name+")") {
+			// A filter naming one group asks about that one; a filter that
+			// names none is an ENUMERATION, which a real directory answers
+			// with every group it has (and may refuse -- that is a
+			// permission, not a shape).
+			if strings.Contains(req.Filter, "cn=") && !strings.Contains(req.Filter, "cn="+name+")") {
 				continue
 			}
 			entries = append(entries, &server.Entry{
-				DN:         "cn=" + name + "," + s.GroupsDN,
-				Attributes: []*server.EntryAttribute{{Name: "memberUid", Values: members}},
+				DN: "cn=" + name + "," + s.GroupsDN,
+				Attributes: []*server.EntryAttribute{
+					{Name: "objectClass", Values: []string{"top", "posixGroup"}},
+					{Name: "cn", Values: []string{name}},
+					{Name: "memberUid", Values: members},
+				},
 			})
 		}
 	default:

@@ -163,3 +163,50 @@ func TestQueriesThatCannotWork(t *testing.T) {
 		t.Errorf("a mangled hash gave %v", err)
 	}
 }
+
+// Listing the groups, from the same query that answers about one.
+func TestGroupNamesFromADatabase(t *testing.T) {
+	db := withDB(t)
+	src, err := sqldir.New(db, sqldir.Queries{
+		People: "select name from people", Groups: "select group_name, member from memberships",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, err := src.GroupNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sorted and without repeats: staff has two rows in the table.
+	if strings.Join(names, ",") != "admins,staff" {
+		t.Errorf("GroupNames() = %v", names)
+	}
+
+	// A source with NO groups query cannot list groups, and that is not an
+	// error: another source in the set may be the one holding them.
+	bare, err := sqldir.New(db, sqldir.Queries{People: "select name from people"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names, err := bare.GroupNames(); err != nil || len(names) != 0 {
+		t.Errorf("GroupNames() with no groups query = %v, %v", names, err)
+	}
+	// Asking about a group by name, though, IS an error there: an empty
+	// answer would grant nothing to nobody and read like a working one.
+	if _, err := bare.Members("staff"); !errors.Is(err, directory.ErrNoSuchGroup) {
+		t.Errorf("Members() with no groups query = %v", err)
+	}
+}
+
+// A groups query that cannot run is reported, not read as "no groups".
+func TestGroupNamesReportsABrokenQuery(t *testing.T) {
+	src, err := sqldir.New(withDB(t), sqldir.Queries{
+		People: "select name from people", Groups: "select * from absent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GroupNames(); err == nil {
+		t.Error("a query that cannot run was read as no groups")
+	}
+}

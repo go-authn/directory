@@ -29,6 +29,7 @@ package sqldir
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/go-authn/directory"
@@ -147,6 +148,36 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 		out = append(out, directory.NewIdentity(name, opts...))
 	}
 	return out, rows.Err()
+}
+
+// GroupNames is every group the groups query names, sorted and without
+// repeats -- the same query as Members, read for its first column.
+func (s *Source) GroupNames() ([]string, error) {
+	if strings.TrimSpace(s.q.Groups) == "" {
+		// A source with no groups query cannot list groups. Reported as
+		// nothing rather than as an error, because [directory.Set.GroupNames]
+		// asks every source and a database that was never given a groups
+		// query is not a broken one.
+		return nil, nil
+	}
+	rows, err := s.db.Query(s.q.Groups)
+	if err != nil {
+		return nil, fmt.Errorf("sqldir: reading the groups: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var g, member string
+		if err := rows.Scan(&g, &member); err != nil {
+			return nil, fmt.Errorf("sqldir: reading a membership: %w", err)
+		}
+		names = append(names, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	slices.Sort(names)
+	return slices.Compact(names), nil
 }
 
 func (s *Source) Members(group string) ([]string, error) {

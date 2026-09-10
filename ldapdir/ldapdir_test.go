@@ -205,3 +205,15 @@ func TestAURLWithAPasswordInItIsRefused(t *testing.T) {
 		t.Error("the refusal printed the password it was refusing")
 	}
 }
+
+// Listing the groups: the same filter Members uses, without the name.
+func TestGroupNamesFromLDAP(t *testing.T) {
+	src, _ := directoryUnderTest(t)
+	names, err := src.GroupNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(names, ",") != "admins,staff" {
+		t.Errorf("GroupNames() = %v", names)
+	}
+}

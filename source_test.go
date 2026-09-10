@@ -2,6 +2,7 @@ package directory
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -155,3 +156,77 @@ func TestTheSmallSurface(t *testing.T) {
 		}
 	}
 }
+
+// Listing the groups is a different question from asking about one, and a
+// source may be able to answer the second and not the first.
+func TestGroupNamesAcrossSources(t *testing.T) {
+	// A source that answers about a group by name and cannot enumerate: an
+	// LDAP directory that refuses a subtree search is exactly this, and a set
+	// containing one must still list what the others have.
+	silent := &namedOnly{groups: map[string][]string{"contractors": {"trevor"}}}
+	set := NewSet(
+		&Static{Name: "the file", Groups: map[string][]string{"staff": {"alice"}, "admins": {"alice"}}},
+		silent,
+	)
+	names, err := set.GroupNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(names, ",") != "admins,staff" {
+		t.Errorf("GroupNames() = %v", names)
+	}
+	// And the group nobody could LIST is still one anybody can ask about:
+	// publishing fewer groups than exist is honest; refusing a member is not.
+	members, err := set.Members("contractors")
+	if err != nil || strings.Join(members, ",") != "trevor" {
+		t.Errorf("Members(contractors) = %v, %v", members, err)
+	}
+}
+
+// A set with nothing that can list answers nothing, rather than an error: an
+// empty answer from sources that cannot enumerate is not a failure.
+func TestGroupNamesWithNothingThatCanList(t *testing.T) {
+	set := NewSet(&namedOnly{groups: map[string][]string{"staff": {"alice"}}})
+	names, err := set.GroupNames()
+	if err != nil || len(names) != 0 {
+		t.Errorf("GroupNames() = %v, %v", names, err)
+	}
+}
+
+// A lister that is BROKEN is reported, because a directory that is down and a
+// directory with no groups are different situations with different fixes.
+func TestGroupNamesReportsABrokenLister(t *testing.T) {
+	set := NewSet(&brokenLister{})
+	if _, err := set.GroupNames(); err == nil || !strings.Contains(err.Error(), "the broken one") {
+		t.Errorf("GroupNames() = %v, want the source named", err)
+	}
+	// With something that works alongside it, the answer is what could be
+	// read: a server that publishes nothing because one source is down is
+	// worse than one that publishes what it has.
+	set = NewSet(&brokenLister{}, &Static{Groups: map[string][]string{"staff": {"alice"}}})
+	names, err := set.GroupNames()
+	if err != nil || strings.Join(names, ",") != "staff" {
+		t.Errorf("GroupNames() = %v, %v", names, err)
+	}
+}
+
+// namedOnly answers about a group by name and cannot list.
+type namedOnly struct{ groups map[string][]string }
+
+func (n *namedOnly) Describe() string                 { return "a source that cannot enumerate" }
+func (n *namedOnly) Identities() ([]*Identity, error) { return nil, nil }
+func (n *namedOnly) Members(group string) ([]string, error) {
+	members, ok := n.groups[group]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrNoSuchGroup, group)
+	}
+	return members, nil
+}
+
+// brokenLister can be asked and always fails.
+type brokenLister struct{}
+
+func (brokenLister) Describe() string                 { return "the broken one" }
+func (brokenLister) Identities() ([]*Identity, error) { return nil, nil }
+func (brokenLister) Members(string) ([]string, error) { return nil, errors.New("down") }
+func (brokenLister) GroupNames() ([]string, error)    { return nil, errors.New("down") }

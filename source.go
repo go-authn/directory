@@ -29,6 +29,21 @@ type Source interface {
 	Describe() string
 }
 
+// A GroupLister is a source that can say WHICH groups it has, rather than only
+// answering about one by name.
+//
+// It is a separate, optional interface because not every source can. Members
+// asks a question with the name in hand -- an LDAP filter, a WHERE clause --
+// and a source that answers those need not be able to enumerate: a query that
+// lists people says nothing about groups at all, and a directory may permit
+// one and refuse the other.
+//
+// A server that PUBLISHES groups needs this; one that only checks membership
+// does not, which is why adding it did not change the Source interface.
+type GroupLister interface {
+	GroupNames() ([]string, error)
+}
+
 // ErrNoSuchGroup is what a source returns for a name it does not have.
 var ErrNoSuchGroup = errors.New("directory: no such group")
 
@@ -123,6 +138,37 @@ func (s *Set) Members(group string) ([]string, error) {
 	return nil, fmt.Errorf("%w: %q", ErrNoSuchGroup, group)
 }
 
+// GroupNames is every group the sources can name, sorted and without repeats.
+//
+// Sources that cannot list groups are skipped rather than refused, so this can
+// legitimately return FEWER groups than [Set.Members] would answer for: an
+// LDAP directory that will not enumerate still answers about a group somebody
+// names. A caller publishing a list should say where it came from, and a
+// caller checking membership should keep asking Members.
+func (s *Set) GroupNames() ([]string, error) {
+	var names []string
+	var firstErr error
+	for _, src := range s.sources {
+		lister, ok := src.(GroupLister)
+		if !ok {
+			continue
+		}
+		got, err := lister.GroupNames()
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%s: %w", src.Describe(), err)
+			}
+			continue
+		}
+		names = append(names, got...)
+	}
+	if len(names) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	slices.Sort(names)
+	return slices.Compact(names), nil
+}
+
 // Close closes whichever sources hold something open.
 func (s *Set) Close() error {
 	var err error
@@ -193,6 +239,16 @@ func (s *Static) Describe() string {
 }
 
 func (s *Static) Identities() ([]*Identity, error) { return slices.Clone(s.People), nil }
+
+// GroupNames is the groups this list holds, which it knows exactly.
+func (s *Static) GroupNames() ([]string, error) {
+	names := make([]string, 0, len(s.Groups))
+	for name := range s.Groups {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names, nil
+}
 
 func (s *Static) Members(group string) ([]string, error) {
 	members, ok := s.Groups[group]
