@@ -59,7 +59,7 @@ func openSQL(b Block) (directory.Source, error) {
 	// found this one -- a test could not remove its own SQLite file, because
 	// the handle was still open -- and every Unix hid it, since unlinking a
 	// file somebody still holds is allowed there.
-	return closer{Source: src, close: db.Close}, nil
+	return closing(src, db.Close), nil
 }
 
 // driverFor maps the name a person writes -- the database's, not the Go

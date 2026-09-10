@@ -186,12 +186,36 @@ func named(fields map[string]string) string {
 	return strings.Join(written[:len(written)-1], ", ") + " and " + written[len(written)-1]
 }
 
-// closer is a source that closes something when the set closes. It embeds the
-// Source rather than wrapping it method by method, so a source that grows a
-// method later keeps it here.
+// closing gives back a source that closes something when the set closes.
+//
+// ⛔ A wrapper that embeds an INTERFACE has exactly that interface's methods,
+// and silently drops every optional one the concrete type had. Wrapping a
+// *sqldir.Source in a plain struct made it stop being a
+// [directory.GroupLister] -- so a server publishing this directory published
+// no groups at all, with nothing anywhere saying why. It was found by a
+// consumer's end-to-end test, which is the only place it CAN be found: every
+// type still satisfied every interface it was declared against.
+//
+// So the wrapper is chosen by what the source can do. One more capability
+// means one more case here, and a test that asks for it.
+func closing(src directory.Source, close func() error) directory.Source {
+	if lister, ok := src.(directory.GroupLister); ok {
+		return closingLister{closer{src, close}, lister}
+	}
+	return closer{src, close}
+}
+
 type closer struct {
 	directory.Source
 	close func() error
 }
 
 func (c closer) Close() error { return c.close() }
+
+// closingLister is a closer that can still list its groups.
+type closingLister struct {
+	closer
+	lister directory.GroupLister
+}
+
+func (c closingLister) GroupNames() ([]string, error) { return c.lister.GroupNames() }
