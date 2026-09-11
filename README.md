@@ -2,6 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-authn/directory.svg)](https://pkg.go.dev/github.com/go-authn/directory)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-0A6E96?style=flat-square)](LICENSE)
+[![CI](https://github.com/go-authn/directory/actions/workflows/ci.yml/badge.svg)](https://github.com/go-authn/directory/actions/workflows/ci.yml)
 
 **Who somebody is and what proves them — one model over a database, an LDAP
 server, or a list you hold yourself.** Pure Go, `CGO_ENABLED=0`, no driver
