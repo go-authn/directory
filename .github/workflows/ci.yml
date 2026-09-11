@@ -24,7 +24,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
           check-latest: true
@@ -56,7 +56,7 @@ jobs:
         tags: [nosql, noldap, "nosql,noldap"]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with: { go-version: stable, check-latest: true, cache: true }
       # hcldir carries the tags a PROGRAM uses to leave out a database driver
       # or an LDAP client. They have to keep building here, or the program
@@ -70,7 +70,7 @@ jobs:
       CGO_ENABLED: "1"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with: { go-version: stable, check-latest: true, cache: true }
       # ⛔ The judge belongs in every lane that RUNS the tests, not only the
       # one named "test". It was in that one alone here, so every test driving
@@ -87,7 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with: { go-version: stable, check-latest: true, cache: true }
       # ⛔ The judge belongs in every lane that RUNS the tests, not only the
       # one named "test". It was in that one alone here, so every test driving
@@ -122,7 +122,7 @@ jobs:
         goarch: [amd64, arm64, riscv64, loong64, ppc64le, s390x]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with: { go-version: stable, check-latest: true, cache: true }
       - run: GOARCH=${{ matrix.goarch }} go build ./...
       - name: Install qemu-user-static
