@@ -275,3 +275,27 @@ func utf16le(s string) []byte {
 	}
 	return out
 }
+
+// KerberosKey derives this identity's Kerberos long-term key.
+//
+// The derivation is the CALLER's, and that is the whole design. A Kerberos key
+// is string2key(password, salt, enctype) — arithmetic this package has no
+// business carrying, since it would drag a Kerberos library into everything
+// that merely wants to list users. Passing the function in means the password
+// never leaves here and the enctype table stays where enctypes are understood.
+//
+// It answers only for an identity that carries the PASSWORD. A Verifier — a
+// bind against somebody else's directory, or a hash comparison — cannot serve
+// Kerberos at all: a KDC has to DECRYPT the client's pre-authentication with
+// this key, and "is this the right password" does not produce one. That is a
+// property of Kerberos, not a limitation here, and a server should say so at
+// configuration time rather than at the first kinit.
+func (i *Identity) KerberosKey(derive func(password string) ([]byte, error)) ([]byte, error) {
+	if i.password == "" {
+		return nil, ErrNoCredential
+	}
+	if derive == nil {
+		return nil, errors.New("directory: KerberosKey needs a derivation function")
+	}
+	return derive(i.password)
+}

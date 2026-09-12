@@ -187,3 +187,46 @@ func TestParsingAOneTimeCodeSecret(t *testing.T) {
 		}
 	}
 }
+
+// A Kerberos key is derived by the CALLER, so what this package owes is the
+// gate in front of it: who may be asked, and what happens when nobody can
+// answer.
+func TestTheKerberosKeyIsGatedOnThePassword(t *testing.T) {
+	derive := func(password string) ([]byte, error) {
+		return []byte("key-for-" + password), nil
+	}
+
+	got, err := NewIdentity("alice", WithPassword("s3cret")).KerberosKey(derive)
+	if err != nil {
+		t.Fatalf("an identity with a password: %v", err)
+	}
+	if string(got) != "key-for-s3cret" {
+		t.Errorf("the derivation saw %q", got)
+	}
+
+	// ⛔ A Verifier cannot serve Kerberos, and that is a property of the
+	// protocol: a KDC must DECRYPT the client's pre-authentication with this
+	// key, and "is this the right password" does not produce one. Saying so
+	// here means a server can refuse at configuration time rather than at the
+	// first kinit.
+	verifier := NewIdentity("bob", WithVerifier(func(string) error { return nil }))
+	if _, err := verifier.KerberosKey(derive); !errors.Is(err, ErrNoCredential) {
+		t.Errorf("a verifier-only identity gave %v, want ErrNoCredential", err)
+	}
+	if _, err := NewIdentity("nobody").KerberosKey(derive); !errors.Is(err, ErrNoCredential) {
+		t.Errorf("an identity with nothing gave %v, want ErrNoCredential", err)
+	}
+
+	// And a caller that forgets the derivation is told, rather than handed a
+	// nil key that would authenticate nobody and look like a wrong password.
+	if _, err := NewIdentity("alice", WithPassword("x")).KerberosKey(nil); err == nil {
+		t.Error("a nil derivation was accepted")
+	}
+
+	// A derivation that fails is reported, not swallowed.
+	boom := errors.New("no such enctype")
+	if _, err := NewIdentity("alice", WithPassword("x")).KerberosKey(
+		func(string) ([]byte, error) { return nil, boom }); !errors.Is(err, boom) {
+		t.Errorf("a failing derivation gave %v", err)
+	}
+}
