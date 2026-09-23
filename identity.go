@@ -291,11 +291,39 @@ func utf16le(s string) []byte {
 // property of Kerberos, not a limitation here, and a server should say so at
 // configuration time rather than at the first kinit.
 func (i *Identity) KerberosKey(derive func(password string) ([]byte, error)) ([]byte, error) {
+	return i.Derive(derive)
+}
+
+// Derive runs a caller's key derivation over this identity's password and
+// returns only the result.
+//
+// This is what KerberosKey always was: its body never mentioned Kerberos, and
+// the shape -- hand the secret to a function the caller owns, keep the secret
+// here -- is the one every protocol needs that must POSSESS the password
+// rather than merely check it.
+//
+// ⛔ THE NAME MATTERED. go-fileshare needs exactly this to verify an AWS
+// SigV4 signature, whose signing key is
+//
+//	HMAC(HMAC(HMAC(HMAC("AWS4"+secret, date), region), service), "aws4_request")
+//
+// -- a derivation, and nothing to do with Kerberos. Calling KerberosKey to
+// build an S3 key would have read as a mistake to everybody who met it later,
+// and the protocol after that would have added a third name for one function.
+// KerberosKey stays and delegates, because it is published and its own name is
+// right at its own call sites.
+//
+// It answers only for an identity that carries the PASSWORD. A Verifier -- a
+// bind against somebody else's directory, or a hash comparison -- cannot serve
+// these protocols at all: they need the secret itself, and "is this the right
+// password" does not produce one. That is a property of the protocols, and a
+// server should say so at configuration time rather than at the first request.
+func (i *Identity) Derive(derive func(password string) ([]byte, error)) ([]byte, error) {
 	if i.password == "" {
 		return nil, ErrNoCredential
 	}
 	if derive == nil {
-		return nil, errors.New("directory: KerberosKey needs a derivation function")
+		return nil, errors.New("directory: Derive needs a derivation function")
 	}
 	return derive(i.password)
 }
