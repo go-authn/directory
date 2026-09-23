@@ -230,3 +230,42 @@ func TestTheKerberosKeyIsGatedOnThePassword(t *testing.T) {
 		t.Errorf("a failing derivation gave %v", err)
 	}
 }
+
+// Derive is what KerberosKey always was, and both must stay equivalent: the
+// day they diverge, one of the two call sites gets a different key for the
+// same password and the failure is a signature that will not verify.
+func TestDeriveAndKerberosKeyAgree(t *testing.T) {
+	id := NewIdentity("alice", WithPassword("hunter2"))
+	seen := func(p string) ([]byte, error) { return []byte("derived:" + p), nil }
+
+	a, err := id.Derive(seen)
+	if err != nil {
+		t.Fatalf("Derive: %v", err)
+	}
+	b, err := id.KerberosKey(seen)
+	if err != nil {
+		t.Fatalf("KerberosKey: %v", err)
+	}
+	if string(a) != string(b) {
+		t.Errorf("Derive = %q, KerberosKey = %q; they must be the same function", a, b)
+	}
+	if string(a) != "derived:hunter2" {
+		t.Errorf("the derivation did not see the password: %q", a)
+	}
+}
+
+// An identity that only VERIFIES cannot serve a protocol that needs the
+// secret. Saying so here is what lets a server refuse at configuration time.
+func TestDeriveRefusesAnIdentityWithNoPassword(t *testing.T) {
+	id := NewIdentity("eli", WithVerifier(func(string) error { return nil }))
+	if _, err := id.Derive(func(string) ([]byte, error) { return nil, nil }); err == nil {
+		t.Error("Derive answered for an identity that holds no password")
+	}
+}
+
+func TestDeriveRefusesANilFunction(t *testing.T) {
+	id := NewIdentity("alice", WithPassword("hunter2"))
+	if _, err := id.Derive(nil); err == nil {
+		t.Error("Derive accepted a nil derivation")
+	}
+}
