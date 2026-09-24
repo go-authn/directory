@@ -49,7 +49,7 @@ holding it authenticates as that person exactly as if they held the password.
 | `directory` | a `Static` list you build | **none** |
 | `directory/sqldir` | any `*sql.DB`, with **your** queries | none — the driver is yours to pick |
 | `directory/ldapdir` | an LDAP server | `go-ldap/ldap/v3` |
-| `directory/hcldir` | a `users` block from a configuration file | none — the struct tags are inert |
+| `directory/hcldir` | a `users` block naming a database or an LDAP server, **and** `user`/`group` blocks holding the people themselves | `golang.org/x/crypto/ssh`, to parse an authorized_keys line |
 | `directory/ldaptest` | *(an LDAP directory to test against)* | `glauth/ldap` |
 
 A one-time-code secret is a credential like the others — `Can(TOTPSecret)`,
