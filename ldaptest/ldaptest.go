@@ -17,16 +17,36 @@
 // reading of the specification can only ever confirm that reading: if the
 // reading is wrong, the fake is wrong the same way and the test passes.
 //
+// ⛔ That is why this does NOT use go-authn/ldap, even though go-authn now
+// has an LDAP server of its own and every other consumer has moved to it.
+// ldapdir is a CLIENT. Testing it against a server from the same hands makes
+// judge and subject one thing, and a shared misreading of RFC 4511 would
+// pass both ways. An outside implementation is the only thing here that can
+// disagree with us.
+//
 // It exists because three packages had written the same fixture, and one of
 // them is a file server in another organisation entirely. A fixture copied
 // three times is three fixtures that drift.
 //
-// # What it deliberately gets right
+// # Why it is deliberately permissive
 //
-// An empty password binds SUCCESSFULLY here, because it does in a real
-// directory -- the unauthenticated bind, RFC 4513 §5.1.2. A server that treats
-// a bind as proof must refuse an empty password itself, and cannot be shown to
-// do so against a fixture that quietly refuses it first.
+// An empty password binds SUCCESSFULLY here, and that is a choice about
+// TESTING rather than a copy of what a directory does.
+//
+// ⛔ The comment here used to say it succeeds "because it does in a real
+// directory". It does not. RFC 4513 §5.1.2 is the unauthenticated bind -- a
+// NAME with a zero-length password -- and it says servers "SHOULD by default
+// fail Unauthenticated Bind requests with a resultCode of unwillingToPerform".
+// (§5.1.1 is the ANONYMOUS bind, an empty name AND an empty password, which
+// is legitimate and succeeds. The two are one field apart, and conflating
+// them is how a directory either locks out every anonymous client or lets
+// anybody in as anybody.)
+//
+// The permissiveness is still right, for the opposite reason to the one that
+// was written down: a server that treats a bind as proof must refuse an
+// empty password ITSELF, and cannot be shown to do so against a fixture that
+// quietly refuses it first. The fixture says yes so that the code under test
+// has to say no.
 package ldaptest
 
 import (
