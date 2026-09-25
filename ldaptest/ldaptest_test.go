@@ -77,17 +77,25 @@ func TestOpenLDAPBindsAsAPerson(t *testing.T) {
 	}
 }
 
-// ⛔ The unauthenticated bind: an empty password makes a real directory answer
-// SUCCESS while nobody has proved anything (RFC 4513 §5.1.2). This fixture
-// does the same ON PURPOSE, so that a server treating a bind as proof can be
-// SHOWN to refuse an empty password before binding -- against a fixture that
-// refused it first, that test would pass no matter what the server does.
-func TestAnEmptyPasswordBindsLikeARealDirectory(t *testing.T) {
+// ⛔ The unauthenticated bind succeeds HERE, and that is a choice about
+// testing rather than a copy of what a directory does.
+//
+// RFC 4513 §5.1.2 says the opposite of what this comment used to: servers
+// "SHOULD by default fail Unauthenticated Bind requests with a resultCode of
+// unwillingToPerform". A fixture that mirrored that would be useless for the
+// thing this fixture is FOR -- a server treating a bind as proof must be
+// shown to refuse an empty password itself, and against a fixture that
+// refused it first that test passes no matter what the server does.
+//
+// So the fixture says yes so the code under test has to say no. The name is
+// no longer "LikeARealDirectory", because it is not like one, and the old
+// name is how the false claim spread to four other places.
+func TestAnEmptyPasswordBindsSoTheSubjectMustRefuseIt(t *testing.T) {
 	ldapsearch := needLDAPSearch(t)
 	d := serve(t, &ldaptest.Directory{People: map[string]ldaptest.Person{"dora": {Password: "hunter2"}}})
 	if out, err := run(ldapsearch, "-x", "-H", d.URL, "-D", d.DN("dora"), "-w", "",
 		"-b", d.PeopleDN, "(objectClass=posixAccount)", "uid"); err != nil {
-		t.Errorf("an empty password was refused, and a real directory accepts it: %v\n%s", err, out)
+		t.Errorf("the fixture refused an empty password, so nothing downstream can be shown to refuse it: %v\n%s", err, out)
 	}
 }
 
