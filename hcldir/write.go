@@ -120,6 +120,12 @@ func writePassword(path string, f *hclwrite.File, blk *hclwrite.Block, name, pas
 				return err
 			}
 		}
+		// ⛔ 0600 is asked for, and on Windows it is not honoured: that
+		// platform has no Unix permission bits and the file ends up readable
+		// by anyone who can reach it. Saying so here rather than letting the
+		// mode argument imply a guarantee it cannot keep -- a deployment
+		// that needs the secret protected there needs an ACL, which is not
+		// something this package sets.
 		return replaceFile(target, []byte(password+"\n"), 0o600)
 	}
 	body.SetAttributeValue("password", cty.StringVal(password))

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -72,8 +73,18 @@ user "bob" {
 	if strings.TrimSpace(string(held)) != "stapler battery" {
 		t.Errorf("the password file holds %q", held)
 	}
-	if fi, err := os.Stat(pw); err != nil {
+	// ⛔ 0600 is asked for and is NOT a guarantee everywhere. Windows has no
+	// Unix permission bits: the file comes back -rw-rw-rw- and nothing this
+	// package does changes that. Asserting the mode there fails a correct
+	// program, and asserting nothing hides a property that does hold on the
+	// platforms that have it -- so the check runs where the bits exist and
+	// the comment says where they do not.
+	fi, err := os.Stat(pw)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		t.Logf("permission bits are not enforced here; the file is %v", fi.Mode().Perm())
 	} else if fi.Mode().Perm() != 0o600 {
 		t.Errorf("the password file is mode %v, not 0600", fi.Mode().Perm())
 	}
