@@ -3,6 +3,7 @@
 package directory
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/hex"
@@ -185,13 +186,16 @@ var ErrWrongPassword = errors.New("directory: wrong password")
 // LDAP server, and the one that exists precisely so this process need not hold
 // the secret. Falling back to a held password is a constant-time comparison:
 // the difference between "wrong at byte 1" and "wrong at byte 12" is
-// measurable over a network.
+// measurable over a network. Of the SHA-256 digests, not the strings:
+// subtle.ConstantTimeCompare returns at once when the lengths differ, which
+// tells a caller how long the password is.
 func (i *Identity) Verify(password string) error {
 	switch {
 	case i.verify != nil:
 		return i.verify(password)
 	case i.password != "":
-		if subtle.ConstantTimeCompare([]byte(password), []byte(i.password)) == 1 {
+		got, want := sha256.Sum256([]byte(password)), sha256.Sum256([]byte(i.password))
+		if subtle.ConstantTimeCompare(got[:], want[:]) == 1 {
 			return nil
 		}
 		return ErrWrongPassword
