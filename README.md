@@ -49,7 +49,7 @@ holding it authenticates as that person exactly as if they held the password.
 | `directory` | a `Static` list you build | **none** |
 | `directory/sqldir` | any `*sql.DB`, with **your** queries | none — the driver is yours to pick |
 | `directory/ldapdir` | an LDAP server | `go-ldap/ldap/v3` |
-| `directory/hcldir` | a `users` block naming a database or an LDAP server, **and** `user`/`group` blocks holding the people themselves | `golang.org/x/crypto/ssh`, to parse an authorized_keys line |
+| `directory/hcldir` | a `users` block naming a database or an LDAP server, **and** `user`/`group` blocks holding the people themselves | `golang.org/x/crypto/ssh`, to parse an authorized_keys line; `hashicorp/hcl/v2` and `zclconf/go-cty`, to rewrite a file in place (`SetPassword`) |
 | `directory/ldaptest` | *(an LDAP directory to test against)* | `glauth/ldap` |
 
 A one-time-code secret is a credential like the others — `Can(TOTPSecret)`,
@@ -93,8 +93,10 @@ users "ldap" {
 src, err := hcldir.Open(block)      // or hcldir.OpenAll(blocks)
 ```
 
-`hcldir` imports **no HCL library**: the struct tags are inert strings, so the
-caller decodes — with `gohcl`, or by hand — and hands the block over. Nor does
+`hcldir` **does not decode**: the struct tags are inert strings, so the caller
+decodes — with `gohcl`, or by hand — and hands the block over. It does import
+HCL, since v0.10.0, but only to *write*: `SetPassword` edits the file that
+declares a person with `hclwrite`, which keeps its comments, ordering and spacing. Nor does
 it import a database driver: a program blank-imports the ones it wants, and a
 binary that imported none is told exactly that rather than "unknown driver",
 because the fix is one line in the program and not in the configuration.
