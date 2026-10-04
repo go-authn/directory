@@ -223,3 +223,72 @@ func TestThePersonIsFoundInWhicheverFileDeclaresThem(t *testing.T) {
 		t.Errorf("the wrong file was written:\n%s", untouched)
 	}
 }
+
+// ⛔ A password change must not publish the rest of the file. A configuration
+// holding a reader password or a totp_secret is kept 0600 BECAUSE of them, and
+// a rewrite at a fixed 0644 handed every one of them to every local account
+// the first time somebody changed their own password. The rewrite keeps the
+// mode the file had -- it neither widens a private file nor narrows a shared
+// one, which is the administrator's decision either way.
+func TestARewriteKeepsTheModeTheFileHad(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		mode os.FileMode
+		body func(pw string) string
+	}{
+		{"an inline password, 0600", 0o600, func(string) string {
+			return "reader \"cn=r\" { password = \"reader-secret\" }\n" +
+				"user \"alice\" {\n  password    = \"hunter2\"\n  totp_secret = \"JBSWY3DPEHPK3PXP\"\n}\n"
+		}},
+		{"an inline password, 0640", 0o640, func(string) string {
+			return "user \"alice\" { password = \"hunter2\" }\n"
+		}},
+		{"an inline password, 0644 stays 0644", 0o644, func(string) string {
+			return "user \"alice\" { password = \"hunter2\" }\n"
+		}},
+		// The other rewrite of the configuration: a password_file beside an
+		// nt_hash, where the hash has to change in the configuration.
+		{"an nt_hash beside a password_file, 0600", 0o600, func(pw string) string {
+			return "user \"alice\" {\n  password_file = \"" + filepath.ToSlash(pw) + "\"\n" +
+				"  nt_hash       = \"" + fmt.Sprintf("%x", directory.NTHashOf("hunter2")) + "\"\n}\n"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			pw := filepath.Join(dir, "alice.pw")
+			if err := os.WriteFile(pw, []byte("hunter2\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			path := writeHCL(t, dir, "c.hcl", tc.body(pw))
+			// Chmod, not WriteFile's mode: the umask would decide that one.
+			if err := os.Chmod(path, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := hcldir.SetPassword([]string{path}, "alice", "correct horse"); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if os.SameFile(before, after) {
+				t.Fatal("the file was not replaced, so this test proves nothing about a rewrite")
+			}
+			// ⛔ Windows has no Unix permission bits (see the comment in
+			// TestAPasswordGoesWhereTheBlockKeepsIt): the rewrite still has to
+			// succeed there, and the mode is only asserted where it exists.
+			if runtime.GOOS == "windows" {
+				t.Logf("permission bits are not enforced here; the file is %v", after.Mode().Perm())
+			} else if after.Mode().Perm() != tc.mode {
+				t.Errorf("the configuration was %v and is %v after a password change",
+					tc.mode, after.Mode().Perm())
+			}
+		})
+	}
+}
