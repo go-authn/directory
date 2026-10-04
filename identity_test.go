@@ -269,3 +269,25 @@ func TestDeriveRefusesANilFunction(t *testing.T) {
 		t.Error("Derive accepted a nil derivation")
 	}
 }
+
+// Comparing digests rather than strings changes no answer: the same
+// password verifies, a prefix, an extension, a different case and the
+// empty string do not. (That the time no longer depends on the length is
+// not something a unit test can measure; the digests have one length.)
+func TestVerifyAnswersAsBefore(t *testing.T) {
+	id := NewIdentity("alice", WithPassword("correct horse"))
+	for _, c := range []struct {
+		pw string
+		ok bool
+	}{
+		{"correct horse", true},
+		{"correct hors", false},
+		{"correct horse ", false},
+		{"Correct horse", false},
+		{"", false},
+	} {
+		if err := id.Verify(c.pw); (err == nil) != c.ok {
+			t.Errorf("%q: %v", c.pw, err)
+		}
+	}
+}
