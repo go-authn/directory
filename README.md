@@ -42,6 +42,22 @@ holds a bcrypt" *before* they meet a refusal at a mount.
 And plainly in the other direction: the NT hash **is** the credential. Anybody
 holding it authenticates as that person exactly as if they held the password.
 
+So an `Identity` answers each protocol with its own method:
+
+- `Verify(password)` for anything that is handed the password. It prefers the
+  verifier a source gave (which may be an LDAP bind), and falls back to a held
+  password compared in constant time, on SHA-256 digests so that not even the
+  length leaks.
+- `NTKey()` for NTLMv2: from the hash a source published, or derived from the
+  password; `ErrNoCredential` when it has neither.
+- `KerberosKey(derive)` for a KDC, which only an identity carrying the password
+  can answer: a KDC has to DECRYPT with the key, and a yes from a verifier is
+  not one.
+
+A database whose passwords are bcrypt, argon2 or anything else is read with
+`sqldir.WithPasswordCheck(func(db, name, password) error)`. Without it, a
+password column is compared as it stands.
+
 ## The sources
 
 | package | reads | dependencies |
