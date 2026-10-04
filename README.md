@@ -77,7 +77,7 @@ here once:
 users "sql" {
   driver   = "postgres"               # or sqlite, or mysql
   dsn_file = "/etc/authnd/dsn"        # a DSN holds a password: it lives in a file
-  users    = "select login, nt_hash, ssh_keys from staff"
+  users    = "select login, null, nt_hash, ssh_keys from staff"   # by position: name, password, nt_hash, ssh_keys, totp_secret
   groups   = "select team, member from team_members"
 }
 
