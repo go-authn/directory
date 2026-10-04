@@ -28,6 +28,7 @@ package ldapdir
 import (
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/url"
 	"slices"
 	"strings"
@@ -74,7 +75,7 @@ type Config struct {
 
 	// StartTLS upgrades a plaintext connection before binding. A directory
 	// reached over ldap:// without it sends the bind password in the clear,
-	// which is worth being asked for rather than assumed.
+	// so [New] refuses ldap:// to anything but loopback without it.
 	StartTLS bool
 }
 
@@ -101,6 +102,9 @@ func New(cfg Config) (*Source, error) {
 	// The refusal does not quote the URL, for the same reason.
 	if u, err := url.Parse(cfg.URL); err == nil && u.User != nil {
 		return nil, fmt.Errorf("ldapdir: the url carries credentials in it, and a URL is printed: give BindDN and BindPassword instead")
+	}
+	if err := cleartext(cfg.URL, cfg.StartTLS); err != nil {
+		return nil, err
 	}
 	if cfg.TLS == nil {
 		cfg.TLS = &tls.Config{MinVersion: tls.VersionTLS12}
@@ -319,4 +323,36 @@ func memberName(m string) string {
 		return m
 	}
 	return dn.RDNs[0].Attributes[0].Value
+}
+
+// cleartext refuses a plaintext ldap:// to another machine.
+//
+// ⛔ Every password [Source.Identities] hands out a verifier for is checked by
+// a simple BIND, and a simple bind carries the password itself. RFC 4513
+// §5.1.3: it "is not suitable for authentication in environments without
+// confidentiality protection"; §6.3.3: implementations "SHOULD NOT by default
+// support" it unless the session is protected by TLS. Over ldap:// without
+// StartTLS every person who logs in sends their password across the network
+// as typed.
+//
+// Loopback stays allowed -- the same rule the oidc package applies to a JWKS
+// URL -- and so does ldapi://, a local socket: nobody is on the way. hcldir's
+// Block.Check holds the same rule, written there again because hcldir builds
+// without this package under -tags noldap.
+func cleartext(raw string, startTLS bool) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "ldap" || startTLS || loopbackHost(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("ldapdir: would send every password to %q in the clear: "+
+		"use ldaps://, or StartTLS (RFC 4513 §5.1.3)", u.Hostname())
+}
+
+// loopbackHost is a host that cannot be off this machine.
+func loopbackHost(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
