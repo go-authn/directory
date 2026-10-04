@@ -22,11 +22,12 @@
 // them both. A second spelling of the same idea is a second set of mistakes,
 // and a person administering both would have had to learn it twice.
 //
-// # No HCL here
+// # No decoding here
 //
-// The struct tags are inert strings, so this package imports no HCL library
-// and neither does anybody who only wants the shape. The CALLER decodes --
-// with gohcl, or by hand -- and hands the block over.
+// The struct tags are inert strings: the CALLER decodes -- with gohcl, or by
+// hand -- and hands the block over. HCL is imported only to write, by
+// SetPassword, which edits the declaring file with hclwrite (since v0.10.0;
+// this comment said "no HCL library" until a README audit ran go list).
 //
 // # Secrets come from files
 //
