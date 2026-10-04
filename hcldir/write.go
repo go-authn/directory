@@ -116,7 +116,7 @@ func writePassword(path string, f *hclwrite.File, blk *hclwrite.Block, name, pas
 		}
 		if hasHash {
 			// The hash changed, so the configuration changed too.
-			if err := replaceFile(path, f.Bytes(), 0o644); err != nil {
+			if err := replaceFile(path, f.Bytes(), keepMode); err != nil {
 				return err
 			}
 		}
@@ -129,7 +129,7 @@ func writePassword(path string, f *hclwrite.File, blk *hclwrite.Block, name, pas
 		return replaceFile(target, []byte(password+"\n"), 0o600)
 	}
 	body.SetAttributeValue("password", cty.StringVal(password))
-	return replaceFile(path, f.Bytes(), 0o644)
+	return replaceFile(path, f.Bytes(), keepMode)
 }
 
 // attrString is the literal string an attribute is set to.
@@ -150,19 +150,41 @@ func attrString(a *hclwrite.Attribute) (string, error) {
 	return string(toks[1].Bytes), nil
 }
 
+// keepMode is the ceiling for a file whose mode is the administrator's: the
+// configuration. Whatever it was, it stays.
+const keepMode os.FileMode = 0o777
+
 // replaceFile writes content where path is, atomically.
 //
 // ⛔ Through a temporary file in the SAME directory and a rename, because the
 // alternative loses somebody's password on a full disk or a crash: a truncate
 // that then fails to write leaves a file that exists, parses, and locks the
 // person out. A rename either happened or did not.
-func replaceFile(path string, content []byte, mode os.FileMode) error {
+//
+// ⛔ A rename does not keep anything of the file it replaces: the new file has
+// the temporary file's mode and owner. So both are carried over by hand. The
+// mode is the old one with ceiling taken away -- 0600 for a password file,
+// keepMode for the configuration -- so a rewrite can narrow a file and never
+// widen it. A configuration kept 0600 because it holds a reader password and
+// a totp_secret was rewritten 0644 by every self-service password change
+// until this said otherwise. A file that is not there yet gets 0600.
+func replaceFile(path string, content []byte, ceiling os.FileMode) error {
+	mode := 0o600 & ceiling
+	was, err := os.Stat(path)
+	if err == nil {
+		mode = was.Mode().Perm() & ceiling
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".hcldir-*")
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
+	if was != nil {
+		// Before the chmod: changing the owner may clear bits, and which
+		// bits are safe to keep depends on which group the file ended with.
+		mode = keepOwner(tmp, was, mode)
+	}
 	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		return fmt.Errorf("%s: %w", name, err)

@@ -50,6 +50,14 @@ func TestBlocksThatCannotBeWhatTheySay(t *testing.T) {
 			"credentials in its url",
 		},
 		{
+			// RFC 4513 §5.1.3: a simple bind "is not suitable for
+			// authentication in environments without confidentiality
+			// protection" -- and every password checked here IS a bind.
+			"ldap:// to another host without start_tls",
+			hcldir.Block{Kind: "ldap", URL: "ldap://ldap.example.org", BaseDN: "dc=x"},
+			"in the clear",
+		},
+		{
 			"a sql block with no dsn_file",
 			hcldir.Block{Kind: "sql", Driver: "sqlite", UsersQuery: "select 1"},
 			"a dsn_file is needed",
@@ -343,5 +351,42 @@ func TestAnLDAPDirectoryThatIsNotThere(t *testing.T) {
 	_, err := hcldir.Open(hcldir.Block{Kind: "ldap", URL: "ldap://127.0.0.1:1", BaseDN: "dc=x"})
 	if err == nil || !strings.Contains(err.Error(), "not answering") {
 		t.Errorf("%v, want one saying the directory is not answering", err)
+	}
+}
+
+// What a users "ldap" block may reach without TLS: nothing off this machine.
+// A password checked against an LDAP directory is a BIND, which carries the
+// password itself, so over a plaintext ldap:// to another host every person's
+// password crosses the network as it was typed. Loopback stays allowed, by
+// the same rule the oidc package applies to a JWKS URL: nobody is on the way.
+func TestCleartextLDAPIsRefusedOffThisMachine(t *testing.T) {
+	for _, tc := range []struct {
+		url      string
+		startTLS bool
+		ok       bool
+	}{
+		{"ldap://ldap.example.org", false, false},
+		{"ldap://ldap.example.org:389", false, false},
+		{"ldap://192.0.2.1", false, false},
+		{"ldap://[2001:db8::1]:389", false, false},
+		{"ldap://localhost.example.org", false, false}, // a name, not loopback
+		{"ldap://", false, false},                      // no host is not a promise
+		{"LDAP://ldap.example.org", false, false},      // schemes are case-insensitive
+		{"ldap://ldap.example.org", true, true},
+		{"ldaps://ldap.example.org", false, true},
+		{"ldap://127.0.0.1:389", false, true},
+		{"ldap://127.0.0.53", false, true},
+		{"ldap://[::1]:389", false, true},
+		{"ldap://localhost", false, true},
+		{"ldap://ldap.localhost:389", false, true},
+		{"ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi", false, true}, // a local socket
+	} {
+		err := hcldir.Block{Kind: "ldap", URL: tc.url, BaseDN: "dc=x", StartTLS: tc.startTLS}.Check()
+		switch {
+		case tc.ok && err != nil:
+			t.Errorf("%s start_tls=%v: refused: %v", tc.url, tc.startTLS, err)
+		case !tc.ok && (err == nil || !strings.Contains(err.Error(), "in the clear")):
+			t.Errorf("%s start_tls=%v: Check() = %v, want a refusal naming the cleartext", tc.url, tc.startTLS, err)
+		}
 	}
 }

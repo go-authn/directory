@@ -302,3 +302,31 @@ func TestAOneTimeCodeSecretFromLDAP(t *testing.T) {
 		t.Errorf("the error reads %q", err)
 	}
 }
+
+// ldapdir refuses a plaintext ldap:// to another host by itself, not only
+// when hcldir checked the block first: a program can build a Config by hand.
+// RFC 4513 §5.1.3 and §6.3.3 -- a simple bind is the password in the clear
+// unless the session is protected, and every password checked here is one.
+func TestCleartextToAnotherHostIsRefused(t *testing.T) {
+	_, err := ldapdir.New(ldapdir.Config{URL: "ldap://ldap.example.org", BaseDN: "dc=example,dc=org"})
+	if err == nil || !strings.Contains(err.Error(), "in the clear") {
+		t.Fatalf("New() = %v, want a refusal naming the cleartext", err)
+	}
+	// With TLS asked for, or on loopback, the refusal is not the one given:
+	// what fails is the network -- .invalid never resolves, port 1 is shut.
+	for _, cfg := range []ldapdir.Config{
+		{URL: "ldap://ldap.invalid", StartTLS: true},
+		{URL: "ldaps://ldap.invalid"},
+		{URL: "ldap://localhost:1"}, // loopback: nobody is on the way
+		{URL: "ldap://[::1]:1"},
+	} {
+		cfg.BaseDN = "dc=example,dc=org"
+		_, err := ldapdir.New(cfg)
+		if err == nil {
+			t.Fatalf("%s: a directory nothing answers for was accepted", cfg.URL)
+		}
+		if strings.Contains(err.Error(), "in the clear") {
+			t.Errorf("%s start_tls=%v: refused as cleartext: %v", cfg.URL, cfg.StartTLS, err)
+		}
+	}
+}

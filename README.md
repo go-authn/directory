@@ -103,6 +103,27 @@ Two build tags leave a kind out entirely: `-tags nosql` and `-tags noldap`. For
 the program that uses this, `nosql` is usually the biggest single lever it has
 — the three database drivers weigh about 12 MB.
 
+### An LDAP directory is reached over TLS
+
+Every password checked against an LDAP directory is a simple bind, and a simple
+bind carries the password itself (RFC 4513 §5.1.3, §6.3.3). So a `users "ldap"`
+block — and `ldapdir.New` — **refuses `ldap://` to another machine unless
+`start_tls = true`**. `ldaps://` is accepted, and so are `ldap://` to a loopback
+address (`127.0.0.0/8`, `::1`, `localhost`) and `ldapi://`, where nobody is on
+the way. There is no switch to turn this off.
+
+⛔ **This refuses configuration that v0.9.0 accepted.** A block that reached a
+remote directory over plain `ldap://` now fails at `Check`, before anything
+connects; add `start_tls = true` or move to `ldaps://`.
+
+### A password change keeps the file's mode
+
+`hcldir.SetPassword` rewrites the file that declares the person, through a
+temporary file and a rename. The new file keeps the mode the old one had (a
+`password_file` is capped at `0600`), and on Unix its owner and group as far
+as the process may; when the group cannot be kept, the group bits are
+dropped. Up to v0.9.0 the configuration came back `0644` whatever it had been.
+
 ## Testing against a directory
 
 `directory/ldaptest` is an LDAP server to test against, since three packages
