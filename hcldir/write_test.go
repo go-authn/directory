@@ -277,7 +277,9 @@ func TestARewriteKeepsTheModeTheFileHad(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if os.SameFile(before, after) {
+			// ⛔ Not on Windows: there os.SameFile reads the file IDs lazily, BY
+			// PATH, so both FileInfos name the file that is there now.
+			if runtime.GOOS != "windows" && os.SameFile(before, after) {
 				t.Fatal("the file was not replaced, so this test proves nothing about a rewrite")
 			}
 			// ⛔ Windows has no Unix permission bits (see the comment in
