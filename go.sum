@@ -17,8 +17,8 @@ github.com/glauth/ldap v0.0.0-20260718202943-34c5f9b3cbf1/go.mod h1:5ueZMujvJ5nu
 github.com/go-asn1-ber/asn1-ber v1.5.5/go.mod h1:hEBeB/ic+5LoWskz+yKT7vGhhPYkProFKoKdwZRWMe0=
 github.com/go-asn1-ber/asn1-ber v1.5.8 h1:H9AZkK22UOmfX8J84ubyaZxKJZ3FMHVwn8swoMML7iQ=
 github.com/go-asn1-ber/asn1-ber v1.5.8/go.mod h1:hEBeB/ic+5LoWskz+yKT7vGhhPYkProFKoKdwZRWMe0=
-github.com/go-ldap/ldap/v3 v3.4.14 h1:D6PYdEgsaVzsXyr6w/yDC06Ria4uUhWm+Rb+er8lfAs=
-github.com/go-ldap/ldap/v3 v3.4.14/go.mod h1:S4eJUMUNjDkE0ZJtIZdybwyb03sGGLW6gxXT1Hs8VKA=
+github.com/go-ldap/ldap/v3 v3.4.15 h1:eRB4f4Ecn1POL1mO86+uUDlecmyWsdiJwh60bAUS4UY=
+github.com/go-ldap/ldap/v3 v3.4.15/go.mod h1:jeD0c98EdZQCKKKKe4kTWs5aCf6y+j8KuYsYLznZSQk=
 github.com/go-test/deep v1.0.3 h1:ZrJSEWsXzPOxaZnFteGEfooLba+ju3FYIbOrS+rQd68=
 github.com/go-test/deep v1.0.3/go.mod h1:wGDj63lr65AM2AQyKZd/NYHGb0R+1RLqB8NKt3aSFNA=
 github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
