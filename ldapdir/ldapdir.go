@@ -250,7 +250,18 @@ func (s *Source) bindAs(dn string) func(string) error {
 			}
 		}
 		if err := c.Bind(dn, password); err != nil {
-			return directory.ErrWrongPassword
+			// ⛔ Only invalidCredentials (49) says the password is wrong. Every
+			// other failure -- a connection dropped mid-bind, a directory
+			// answering busy (51) or unavailable (52) -- is the directory
+			// failing, and was reported as a wrong password: a server in front
+			// of this one then logged "wrong password" for people who typed it
+			// right, while the real cause went unsaid. Still an error, so the
+			// bind is refused either way: this changes what is SAID, not what
+			// is let in.
+			if ldap.IsErrorWithCode(err, ldap.LDAPResultInvalidCredentials) {
+				return directory.ErrWrongPassword
+			}
+			return fmt.Errorf("ldapdir: the directory did not answer the bind: %w", err)
 		}
 		return nil
 	}
