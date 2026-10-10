@@ -103,8 +103,10 @@ func TestVerifyingAPasswordByBinding(t *testing.T) {
 		if err := id.Verify(want); err != nil {
 			t.Errorf("%s with the right password: %v", id.Name(), err)
 		}
-		if err := id.Verify("wrong"); err == nil {
-			t.Errorf("%s with the wrong password was accepted", id.Name())
+		// And it says WRONG PASSWORD, not some other failure: the directory
+		// answered invalidCredentials (49), the one code that means that.
+		if err := id.Verify("wrong"); !errors.Is(err, directory.ErrWrongPassword) {
+			t.Errorf("%s with the wrong password: %v, want ErrWrongPassword", id.Name(), err)
 		}
 		// ⛔ The unauthenticated bind: an empty password makes a real
 		// directory answer SUCCESS while nobody has proved anything. The
