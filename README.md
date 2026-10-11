@@ -181,9 +181,11 @@ that *can* list (the optional `GroupLister`) and skips the rest: a server
 publishing a list of groups can honestly publish fewer than `Members` would
 answer for, and a server checking membership keeps asking `Members`.
 
-A group with **nobody in it** is refused rather than expanded to nothing: a
-configuration that grants nothing to nobody reads exactly like one that works.
-A group **no source has** is an error, not an empty list, for the same reason —
+A group with **nobody in it** is refused by `Expand` rather than expanded to
+nothing, with `ErrEmptyGroup`: a configuration that grants nothing to nobody
+reads exactly like one that works. `Members` itself answers such a group with an
+empty list, since the group exists (before v0.12.0 it said `ErrNoSuchGroup`).
+A group **no source has** is `ErrNoSuchGroup`, not an empty list —
 and a source that is *broken* is distinguished from one that simply lacks the
 group, because that is the difference between a wrong configuration and a
 database that is down.

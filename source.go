@@ -47,6 +47,12 @@ type GroupLister interface {
 // ErrNoSuchGroup is what a source returns for a name it does not have.
 var ErrNoSuchGroup = errors.New("directory: no such group")
 
+// ErrEmptyGroup is what Expand returns for a group a source HAS, with nobody
+// in it: not ErrNoSuchGroup, because the remedy differs -- a typo or a
+// deleted group on one side, a group to fill on the other. A caller that
+// tolerates a group that grants nothing tests for both.
+var ErrEmptyGroup = errors.New("directory: the group has no members")
+
 // A Set is several sources read as one.
 //
 // A site with its people in LDAP and one service account written down locally
@@ -135,7 +141,11 @@ func (s *Set) Members(group string) ([]string, error) {
 	case missing == len(s.sources):
 		return nil, fmt.Errorf("%w: %q, in %s", ErrNoSuchGroup, group, s.Describe())
 	}
-	return nil, fmt.Errorf("%w: %q", ErrNoSuchGroup, group)
+	// ⛔ A source HAS the group, and nobody is in it. This said
+	// ErrNoSuchGroup before v0.12.0, so Expand's "has no members" could never
+	// be reached through a Set, a group listed by GroupNames was then "no such
+	// group" when asked about, and a server listing groups failed on it.
+	return []string{}, nil
 }
 
 // GroupNames is every group the sources can name, sorted and without repeats.
@@ -214,7 +224,7 @@ func Expand(names []string, src Source) ([]string, error) {
 			return nil, err
 		}
 		if len(members) == 0 {
-			return nil, fmt.Errorf("directory: group %q has no members: nobody would be allowed", group)
+			return nil, fmt.Errorf("%w: %q: nobody would be allowed", ErrEmptyGroup, group)
 		}
 		for _, m := range members {
 			add(m)
