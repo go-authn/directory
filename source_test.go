@@ -230,3 +230,38 @@ func (brokenLister) Describe() string                 { return "the broken one" 
 func (brokenLister) Identities() ([]*Identity, error) { return nil, nil }
 func (brokenLister) Members(string) ([]string, error) { return nil, errors.New("down") }
 func (brokenLister) GroupNames() ([]string, error)    { return nil, errors.New("down") }
+
+// A group a source HAS, with nobody in it, is an empty group: not a missing
+// one. Before v0.12.0 a Set said ErrNoSuchGroup for it, so Expand's "has no
+// members" could not be reached through a Set, a group GroupNames listed was
+// "no such group" when asked about, and go-fileshare's ListGroups failed on
+// it. Expand still refuses it -- now with the cause that is true.
+func TestAnEmptyGroupIsEmptyNotMissing(t *testing.T) {
+	set := NewSet(&Static{Groups: map[string][]string{"empty": {}}}, &Static{Groups: map[string][]string{"staff": {"alice"}}})
+	members, err := set.Members("empty")
+	if err != nil || members == nil || len(members) != 0 {
+		t.Fatalf("Members(empty) = %#v, %v; want an empty list and no error", members, err)
+	}
+	_, err = Expand([]string{"@empty"}, set)
+	if !errors.Is(err, ErrEmptyGroup) || errors.Is(err, ErrNoSuchGroup) {
+		t.Errorf("Expand(@empty) = %v; want ErrEmptyGroup, not ErrNoSuchGroup", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), `"empty"`) {
+		t.Errorf("the refusal does not name the group: %v", err)
+	}
+	// Unknown everywhere: still missing.
+	if _, err := set.Members("nobody"); !errors.Is(err, ErrNoSuchGroup) {
+		t.Errorf("Members(nobody) = %v; want ErrNoSuchGroup", err)
+	}
+	// Empty in one source, with members in another: the members.
+	both := NewSet(&Static{Groups: map[string][]string{"staff": {}}}, &Static{Groups: map[string][]string{"staff": {"bob"}}})
+	if got, err := both.Members("staff"); err != nil || strings.Join(got, ",") != "bob" {
+		t.Errorf("Members(staff) across sources = %v, %v", got, err)
+	}
+	// A broken source beside one that has the group empty: the outage wins,
+	// since the broken one may hold its members.
+	broken := NewSet(&brokenLister{}, &Static{Groups: map[string][]string{"empty": {}}})
+	if _, err := broken.Members("empty"); err == nil || !strings.Contains(err.Error(), "the broken one") {
+		t.Errorf("an outage beside an empty group: %v", err)
+	}
+}
