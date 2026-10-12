@@ -90,6 +90,9 @@ type Directory struct {
 	People map[string]Person
 	// Groups, by cn, holding uids.
 	Groups map[string][]string
+	// GroupExtra are any other attributes of a group in Groups, by the
+	// group's cn: {"staff": {"gidNumber": {"100"}}}.
+	GroupExtra map[string]map[string][]string
 
 	// BaseDN defaults to dc=example,dc=org, with people under
 	// ou=people and groups under ou=groups.
@@ -215,14 +218,15 @@ func (s *Server) Search(_ string, req server.SearchRequest, _ net.Conn) (server.
 			if strings.Contains(req.Filter, "cn=") && !strings.Contains(req.Filter, "cn="+name+")") {
 				continue
 			}
-			entries = append(entries, &server.Entry{
-				DN: "cn=" + name + "," + s.GroupsDN,
-				Attributes: []*server.EntryAttribute{
-					{Name: "objectClass", Values: []string{"top", "posixGroup"}},
-					{Name: "cn", Values: []string{name}},
-					{Name: "memberUid", Values: members},
-				},
-			})
+			attrs := []*server.EntryAttribute{
+				{Name: "objectClass", Values: []string{"top", "posixGroup"}},
+				{Name: "cn", Values: []string{name}},
+				{Name: "memberUid", Values: members},
+			}
+			for an, values := range s.d.GroupExtra[name] {
+				attrs = append(attrs, &server.EntryAttribute{Name: an, Values: values})
+			}
+			entries = append(entries, &server.Entry{DN: "cn=" + name + "," + s.GroupsDN, Attributes: attrs})
 		}
 	default:
 		for uid, p := range s.d.People {

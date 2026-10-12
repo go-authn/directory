@@ -19,7 +19,8 @@ func TestOpenLDAPCanReadIt(t *testing.T) {
 			"dora": {Password: "hunter2", NTHash: "8846f7eaee8fb117ad06bdd830b7586c"},
 			"eli":  {Password: "swordfish"},
 		},
-		Groups: map[string][]string{"engineers": {"dora", "eli"}},
+		Groups:     map[string][]string{"engineers": {"dora", "eli"}},
+		GroupExtra: map[string]map[string][]string{"engineers": {"gidNumber": {"500"}}},
 	})
 
 	out, err := run(ldapsearch, "-x", "-H", d.URL, "-D", d.ReaderDN, "-w", d.ReaderPassword,
@@ -46,12 +47,16 @@ func TestOpenLDAPCanReadIt(t *testing.T) {
 
 	// The groups, in the search a reader actually makes for them.
 	out, err = run(ldapsearch, "-x", "-H", d.URL, "-D", d.ReaderDN, "-w", d.ReaderPassword,
-		"-b", d.GroupsDN, "(&(objectClass=posixGroup)(cn=engineers))", "memberUid")
+		"-b", d.GroupsDN, "(&(objectClass=posixGroup)(cn=engineers))", "memberUid", "gidNumber")
 	if err != nil {
 		t.Fatalf("ldapsearch: %v\n%s", err, out)
 	}
 	if !strings.Contains(out, "memberUid: dora") || !strings.Contains(out, "memberUid: eli") {
 		t.Errorf("the group did not come back:\n%s", out)
+	}
+	// A group's other attributes, which ldapdir copies as GroupAttributes.
+	if !strings.Contains(out, "gidNumber: 500") {
+		t.Errorf("the group's gidNumber did not come back:\n%s", out)
 	}
 }
 
