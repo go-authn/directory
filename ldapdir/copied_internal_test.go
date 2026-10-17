@@ -16,7 +16,7 @@ import (
 func TestCopiedMatchesDescriptionsExactly(t *testing.T) {
 	e := &ldap.Entry{Attributes: []*ldap.EntryAttribute{
 		{Name: "description", Values: []string{"a person"}},
-		{Name: "Description;Lang-FR;x-a", Values: []string{"une personne"}},
+		{Name: "Description;x-A;Lang-FR", Values: []string{"une personne"}},
 		{Name: "description;lang-fr", Values: []string{"pas celle-ci"}},
 		{Name: "MAIL", Values: []string{"a@x.example", ""}},
 		{Name: "mail", Values: []string{"b@x.example"}},
