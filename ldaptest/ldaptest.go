@@ -83,7 +83,16 @@ type Person struct {
 	// Extra are any other attributes, for a schema that names things
 	// differently.
 	Extra map[string][]string
+	// ObjectClasses are the entry's objectClass values. Nil is
+	// DefaultObjectClasses, a posixAccount on an account; a person that must
+	// NOT be a posixAccount says so here.
+	ObjectClasses []string
 }
+
+// DefaultObjectClasses are what a Person is published with when it names
+// none: the shape RFC 2307 §5.3 recommends for a posixAccount ("the account
+// object class provides a convenient structural class").
+var DefaultObjectClasses = []string{"top", "account", "posixAccount"}
 
 // A Directory is what the server answers with.
 type Directory struct {
@@ -230,8 +239,23 @@ func (s *Server) Search(_ string, req server.SearchRequest, _ net.Conn) (server.
 			entries = append(entries, &server.Entry{DN: "cn=" + name + "," + s.GroupsDN, Attributes: attrs})
 		}
 	default:
+		// ⛔ The people search APPLIES its filter, so that which classes a
+		// client asks for decides who it gets, as in a real directory. It did
+		// not: every person came back for every filter, and a client's
+		// default filter could be anything at all without a test noticing.
+		filter, err := server.CompileFilter(req.Filter)
+		if err != nil {
+			return server.ServerSearchResult{ResultCode: server.LDAPResultOperationsError}, err
+		}
 		for uid, p := range s.d.People {
-			attrs := []*server.EntryAttribute{{Name: "uid", Values: []string{uid}}}
+			classes := p.ObjectClasses
+			if classes == nil {
+				classes = DefaultObjectClasses
+			}
+			attrs := []*server.EntryAttribute{
+				{Name: "objectClass", Values: slices.Clone(classes)},
+				{Name: "uid", Values: []string{uid}},
+			}
 			if p.NTHash != "" {
 				attrs = append(attrs, &server.EntryAttribute{Name: "sambaNTPassword", Values: []string{p.NTHash}})
 			}
@@ -244,7 +268,14 @@ func (s *Server) Search(_ string, req server.SearchRequest, _ net.Conn) (server.
 			for name, values := range p.Extra {
 				attrs = append(attrs, &server.EntryAttribute{Name: name, Values: values})
 			}
-			entries = append(entries, &server.Entry{DN: s.DN(uid), Attributes: attrs})
+			e := &server.Entry{DN: s.DN(uid), Attributes: attrs}
+			ok, code := server.ServerApplyFilter(filter, e)
+			if code != server.LDAPResultSuccess {
+				return server.ServerSearchResult{ResultCode: code}, fmt.Errorf("ldaptest: filter %q cannot be applied here", req.Filter)
+			}
+			if ok {
+				entries = append(entries, e)
+			}
 		}
 	}
 	selected(entries, req.Attributes)

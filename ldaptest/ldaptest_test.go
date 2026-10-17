@@ -222,8 +222,8 @@ func TestASearchGetsTheAttributesItAskedFor(t *testing.T) {
 		{[]string{"description"}, "description;lang-fr"},
 		{[]string{"description;lang-de"}, ""},
 		{[]string{"1.1"}, ""},
-		{[]string{"*"}, "description;lang-fr,mail,sambaNTPassword,uid"},
-		{nil, "description;lang-fr,mail,sambaNTPassword,uid"},
+		{[]string{"*"}, "description;lang-fr,mail,objectClass,sambaNTPassword,uid"},
+		{nil, "description;lang-fr,mail,objectClass,sambaNTPassword,uid"},
 	} {
 		if got := names(tc.ask...); got != tc.want {
 			t.Errorf("asked for %v, got %q, want %q", tc.ask, got, tc.want)

@@ -80,6 +80,10 @@ type Block struct {
 	BindDN           string `hcl:"bind_dn,optional"`
 	BindPasswordFile string `hcl:"bind_password_file,optional"`
 	BaseDN           string `hcl:"base_dn,optional"`
+	// UserFilter defaults to ldapdir.DefaultUserFilter,
+	// (|(objectClass=posixAccount)(objectClass=account)(objectClass=uidObject)).
+	// ⛔ Wider than the (objectClass=posixAccount) of v0.13.0 and before:
+	// write that to keep the old set of people.
 	UserFilter       string `hcl:"user_filter,optional"`
 	UserAttribute    string `hcl:"user_attribute,optional"`
 	GroupBaseDN      string `hcl:"group_base_dn,optional"`

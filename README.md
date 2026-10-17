@@ -233,6 +233,40 @@ Two build tags leave a kind out entirely: `-tags nosql` and `-tags noldap`. For
 the program that uses this, `nosql` is usually the biggest single lever it has
 — the three database drivers weigh about 12 MB.
 
+### Who an LDAP directory's people are: the defaults
+
+| setting (`users "ldap"` / `ldapdir.Config`) | default |
+|---|---|
+| `user_filter` / `UserFilter` | `(\|(objectClass=posixAccount)(objectClass=account)(objectClass=uidObject))` — `ldapdir.DefaultUserFilter` |
+| `user_attribute` / `UserAttribute` | `uid` |
+| `group_base_dn` / `GroupBaseDN` | `base_dn` |
+| `group_filter` / `GroupFilter` | `(objectClass=posixGroup)` |
+| `group_attribute` / `GroupAttribute` | `cn` |
+| `group_member_attribute` / `MemberAttribute` | `memberUid` |
+
+The three classes are the standard ones that carry a `uid`: `posixAccount`
+(RFC 2307, a person with a uidNumber, gidNumber and home directory), `account`
+(RFC 4524 §3.1) and `uidObject` (RFC 4519 §3.14).
+[go-authn/authnd](https://github.com/go-authn/authnd) publishes a person
+without the POSIX attributes as an `account` or an `inetOrgPerson`, and puts
+`uidObject` on every person; under the old default such a person was not read
+at all.
+
+⛔ **The default user filter is WIDER than it was up to v0.13.0**, which was
+`(objectClass=posixAccount)`. A directory holding `account` or `uidObject`
+entries that are not posixAccounts — service accounts, hosts named by uid,
+people imported from elsewhere — now gives them to every program that kept
+the default, and those people can then be checked against the directory by a
+bind. A plain `inetOrgPerson` with none of the three classes is still not read
+(`TestTheDefaultUserFilter`). To keep exactly the old set, write the old filter:
+
+```hcl
+users "ldap" {
+  # ...
+  user_filter = "(objectClass=posixAccount)"
+}
+```
+
 ### An LDAP directory is reached over TLS
 
 Every password checked against an LDAP directory is a simple bind, and a simple

@@ -39,7 +39,8 @@ import (
 
 // Config is where the directory is and how it is laid out.
 //
-// The defaults are a small site's posixAccount/posixGroup, which is what an
+// The defaults are a small site's people (posixAccount, account or
+// uidObject: see [DefaultUserFilter]) and posixGroups, which is what an
 // OpenLDAP put up for a team looks like. A directory using groupOfNames says
 // so with MemberAttribute, and the DNs it holds are reduced to their first
 // value so that a member reads as a name everywhere else.
@@ -53,7 +54,15 @@ type Config struct {
 	BindDN       string
 	BindPassword string
 
-	UserFilter    string // default (objectClass=posixAccount)
+	// UserFilter selects the people. The default, [DefaultUserFilter], is
+	// (|(objectClass=posixAccount)(objectClass=account)(objectClass=uidObject)).
+	//
+	// ⛔ It was (objectClass=posixAccount) up to v0.13.0, and the change
+	// WIDENS what a directory gives by default: an entry of class account
+	// (RFC 4524) or uidObject (RFC 4519) that is not a posixAccount was left
+	// out before and is read now. Set UserFilter to the old value to keep the
+	// old set.
+	UserFilter    string
 	UserAttribute string // default uid
 
 	// TOTPAttribute is where a one-time-code secret lives, in base32. It has
@@ -96,6 +105,29 @@ type Config struct {
 	StartTLS bool
 }
 
+// DefaultUserFilter is the UserFilter a [Config] that names none gets: an
+// entry that is a person by any of the three standard classes that carry a
+// uid.
+//
+//   - posixAccount (RFC 2307 §4, AUXILIARY, MUST uid): a person with a
+//     uidNumber, a gidNumber and a home directory;
+//   - account (RFC 4524 §3.1, STRUCTURAL, MUST uid): the structural class
+//     RFC 2307 itself recommends for a posixAccount, and what a person
+//     without the POSIX attributes is published as by go-authn/authnd;
+//   - uidObject (RFC 4519 §3.14, AUXILIARY, MUST uid): the class
+//     go-authn/authnd puts on EVERY person it publishes, whatever its
+//     structural class (inetOrgPerson or account).
+//
+// ⛔ Until v0.13.0 the default was (objectClass=posixAccount) alone. A person
+// go-authn/authnd publishes without the POSIX attributes is not a
+// posixAccount, because RFC 2307 makes uidNumber, gidNumber and homeDirectory
+// MUST, and would have vanished for every consumer of this package. The cost
+// is that the default is WIDER: an institution's directory holding account
+// or uidObject entries that are not posixAccounts -- service accounts, hosts
+// named by uid, people imported from elsewhere -- gives them now, and gave
+// nothing before. A plain inetOrgPerson with neither class is still left out.
+const DefaultUserFilter = "(|(objectClass=posixAccount)(objectClass=account)(objectClass=uidObject))"
+
 // A Source reads an LDAP directory.
 type Source struct {
 	cfg Config
@@ -126,7 +158,7 @@ func New(cfg Config) (*Source, error) {
 	if cfg.TLS == nil {
 		cfg.TLS = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
-	cfg.UserFilter = or(cfg.UserFilter, "(objectClass=posixAccount)")
+	cfg.UserFilter = or(cfg.UserFilter, DefaultUserFilter)
 	cfg.UserAttribute = or(cfg.UserAttribute, "uid")
 	cfg.GroupBaseDN = or(cfg.GroupBaseDN, cfg.BaseDN)
 	cfg.GroupFilter = or(cfg.GroupFilter, "(objectClass=posixGroup)")
