@@ -32,11 +32,46 @@ A plain `inetOrgPerson` with none of the three classes is still not read
 (`TestTheDefaultUserFilter`). To keep exactly the old set, configure the old
 filter: `user_filter = "(objectClass=posixAccount)"`.
 
-### ldaptest applies the people filter
+### ⛔ ldapdir's default group filter is wider: groupOfNames groups are read
+
+The default `GroupFilter` (`group_filter`) was `(objectClass=posixGroup)`, with
+members in `memberUid`. It is now `ldapdir.DefaultGroupFilter`:
+
+    (|(objectClass=posixGroup)(objectClass=groupOfNames))
+
+and with no `MemberAttribute` (`group_member_attribute`) configured, members
+are read from `memberUid` (names) **and** `member` (DNs).
+
+**This widens what an upstream directory gives by default**: an institution's
+`groupOfNames` groups become groups here, and an `@group` rule naming one now
+grants what it says. It adds **no person**: a `member` DN maps to somebody only
+when it is, by distinguishedNameMatch, the DN of an entry the people search
+returned. A DN outside those entries, or naming nobody, maps to nobody, and so
+does a spoof such as `uid=alice,ou=elsewhere,...` when alice was imported from
+`ou=people`.
+
+Why: go-authn/authnd publishes a group without a `gidNumber` as a
+`groupOfNames`, since RFC 2307 makes `gidNumber` MUST in `posixGroup`. Under
+the old default such a group was "no such group" for go-fileshare.
+
+To keep the old groups exactly: `group_filter = "(objectClass=posixGroup)"`
+and `group_member_attribute = "memberUid"`.
+
+### A member DN is no longer read out of the DN
+
+A configured `MemberAttribute` is still the one attribute read. But a DN in it
+-- always, for `member` and `uniqueMember` -- now maps only to a person this
+source imported, by that person's DN. Up to v0.13.0 it was reduced to the
+value of its first RDN, so `uid=alice,ou=elsewhere,...`, `cn=alice,...` and
+`uid=zed,...` became members named alice, alice and zed whether or not any of
+them had been imported.
+
+### ldaptest applies base and filter to every search
 
 `ldaptest` used to answer every people search with every person, whatever the
-filter. It now gives each person an `objectClass` (`Person.ObjectClasses`,
-default `top`, `account`, `posixAccount`) and returns only the people the
-filter matches, so a test of a client's filter can fail. A test that searched
-with a filter its people did not match, and relied on getting them anyway,
-gets nobody now.
+filter, and took any filter containing "posixGroup" for a group search. It now
+gives each person an `objectClass` (`Person.ObjectClasses`, default `top`,
+`account`, `posixAccount`), has `groupOfNames` groups (`GroupsOfNames`, DNs in
+`member`), and answers every search with the entries under its base that its
+filter matches, so a test of a client's filters can fail. A test that relied on
+getting people or groups its filter did not match gets nothing now.
