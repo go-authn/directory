@@ -17,7 +17,8 @@ func openLDAP(b Block) (directory.Source, error) {
 		GroupBaseDN: b.GroupBaseDN, GroupFilter: b.GroupFilter,
 		GroupAttribute: b.GroupAttribute, MemberAttribute: b.MemberAttribute,
 		TOTPAttribute: b.TOTPAttribute,
-		StartTLS:      b.StartTLS,
+		Attributes:    b.Attributes, GroupAttributes: b.GroupAttributes,
+		StartTLS: b.StartTLS,
 	}
 	if b.BindPasswordFile != "" {
 		pw, err := secretFile(b.BindPasswordFile, "the bind password")

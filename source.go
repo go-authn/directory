@@ -44,6 +44,20 @@ type GroupLister interface {
 	GroupNames() ([]string, error)
 }
 
+// A GroupAttributer is a source that can say what a group IS beyond who is in
+// it: a gidNumber, a description.
+//
+// Optional for the reason [GroupLister] is: a source that implements nothing
+// new still compiles and still answers Members, and a [Set] asks it only
+// whether it has the group.
+//
+// It answers like Members: [ErrNoSuchGroup] for a group the source does not
+// have, and an empty Attributes, with no error, for one it has and says
+// nothing about.
+type GroupAttributer interface {
+	GroupAttributes(group string) (Attributes, error)
+}
+
 // ErrNoSuchGroup is what a source returns for a name it does not have.
 var ErrNoSuchGroup = errors.New("directory: no such group")
 
@@ -148,6 +162,49 @@ func (s *Set) Members(group string) ([]string, error) {
 	return []string{}, nil
 }
 
+// GroupAttributes asks every source about one group and puts the answers
+// together, one attribute at a time: the first source to give an attribute
+// owns it, so a gidNumber written in a local file overrides the directory's,
+// and a description only the directory has still comes through. Values are
+// never merged across sources -- two sources giving a group two gidNumbers is
+// a disagreement, and taking the union would publish both.
+//
+// A source that cannot describe groups (no [GroupAttributer]) is asked
+// Members instead, to learn whether it HAS the group: a group that exists
+// only there is answered with no attributes, not with ErrNoSuchGroup.
+//
+// ⛔ Unlike Members, a broken source is an error even when another answered.
+// Members can return the half it has, because more people is the only thing
+// the missing half could add. Here the missing source may be the one whose
+// gidNumber should have WON, and answering without it would publish a
+// different group id -- which decides who may read which files -- with
+// nothing saying so.
+func (s *Set) GroupAttributes(group string) (Attributes, error) {
+	var out Attributes
+	var found bool
+	for _, src := range s.sources {
+		var got Attributes
+		var err error
+		if ga, ok := src.(GroupAttributer); ok {
+			got, err = ga.GroupAttributes(group)
+		} else {
+			_, err = src.Members(group)
+		}
+		if err != nil {
+			if errors.Is(err, ErrNoSuchGroup) {
+				continue
+			}
+			return Attributes{}, fmt.Errorf("%s: %w", src.Describe(), err)
+		}
+		found = true
+		out = out.under(got)
+	}
+	if !found {
+		return Attributes{}, fmt.Errorf("%w: %q, in %s", ErrNoSuchGroup, group, s.Describe())
+	}
+	return out, nil
+}
+
 // GroupNames is every group the sources can name, sorted and without repeats.
 //
 // Sources that cannot list groups are skipped rather than refused, so this can
@@ -239,6 +296,19 @@ type Static struct {
 	Name   string
 	People []*Identity
 	Groups map[string][]string
+
+	// GroupAttrs describe the groups in Groups. A group is one of this
+	// source's because it is in Groups: an entry here for a group that is not
+	// there describes nothing, and is answered as no such group.
+	GroupAttrs map[string]Attributes
+}
+
+// GroupAttributes is what this list says about a group.
+func (s *Static) GroupAttributes(group string) (Attributes, error) {
+	if _, ok := s.Groups[group]; !ok {
+		return Attributes{}, fmt.Errorf("%w: %q", ErrNoSuchGroup, group)
+	}
+	return s.GroupAttrs[group], nil
 }
 
 func (s *Static) Describe() string {

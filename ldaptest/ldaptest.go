@@ -52,6 +52,7 @@ package ldaptest
 import (
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -90,6 +91,9 @@ type Directory struct {
 	People map[string]Person
 	// Groups, by cn, holding uids.
 	Groups map[string][]string
+	// GroupExtra are any other attributes of a group in Groups, by the
+	// group's cn: {"staff": {"gidNumber": {"100"}}}.
+	GroupExtra map[string]map[string][]string
 
 	// BaseDN defaults to dc=example,dc=org, with people under
 	// ou=people and groups under ou=groups.
@@ -215,14 +219,15 @@ func (s *Server) Search(_ string, req server.SearchRequest, _ net.Conn) (server.
 			if strings.Contains(req.Filter, "cn=") && !strings.Contains(req.Filter, "cn="+name+")") {
 				continue
 			}
-			entries = append(entries, &server.Entry{
-				DN: "cn=" + name + "," + s.GroupsDN,
-				Attributes: []*server.EntryAttribute{
-					{Name: "objectClass", Values: []string{"top", "posixGroup"}},
-					{Name: "cn", Values: []string{name}},
-					{Name: "memberUid", Values: members},
-				},
-			})
+			attrs := []*server.EntryAttribute{
+				{Name: "objectClass", Values: []string{"top", "posixGroup"}},
+				{Name: "cn", Values: []string{name}},
+				{Name: "memberUid", Values: members},
+			}
+			for an, values := range s.d.GroupExtra[name] {
+				attrs = append(attrs, &server.EntryAttribute{Name: an, Values: values})
+			}
+			entries = append(entries, &server.Entry{DN: "cn=" + name + "," + s.GroupsDN, Attributes: attrs})
 		}
 	default:
 		for uid, p := range s.d.People {
@@ -242,6 +247,7 @@ func (s *Server) Search(_ string, req server.SearchRequest, _ net.Conn) (server.
 			entries = append(entries, &server.Entry{DN: s.DN(uid), Attributes: attrs})
 		}
 	}
+	selected(entries, req.Attributes)
 	return server.ServerSearchResult{Entries: entries, ResultCode: server.LDAPResultSuccess}, nil
 }
 
@@ -250,4 +256,34 @@ func or(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// selected keeps the attributes a search asked for, as a directory does (RFC
+// 4511 §4.5.1.8): none listed, or "*", is every attribute; "1.1" is none; a
+// type with no options also returns its tagged forms (description returns
+// description;lang-fr), and one with options returns exactly that one.
+//
+// ⛔ glauth/ldap does this only with EnforceLDAP set, which would also apply
+// the search FILTER to entries built here without the objectClass that filter
+// names. Without either, every search got every attribute back -- so a client
+// that forgot to ASK for an attribute still received it, and a test of that
+// client passed. ldapdir's copied attributes were exactly that case: dropping
+// them from the request changed nothing a test could see.
+func selected(entries []*server.Entry, requested []string) {
+	if len(requested) == 0 || slices.Contains(requested, "*") {
+		return
+	}
+	for _, e := range entries {
+		var kept []*server.EntryAttribute
+		for _, a := range e.Attributes {
+			for _, r := range requested {
+				if strings.EqualFold(a.Name, r) ||
+					(!strings.Contains(r, ";") && strings.HasPrefix(strings.ToLower(a.Name), strings.ToLower(r)+";")) {
+					kept = append(kept, a)
+					break
+				}
+			}
+		}
+		e.Attributes = kept
+	}
 }

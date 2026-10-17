@@ -58,6 +58,64 @@ A database whose passwords are bcrypt, argon2 or anything else is read with
 `sqldir.WithPasswordCheck(func(db, name, password) error)`. Without it, a
 password column is compared as it stands.
 
+## Attributes: what describes somebody, and proves nothing
+
+A server publishing `posixAccount` (RFC 2307), `posixGroup` and
+`inetOrgPerson` (RFC 2798) entries needs more than credentials: a
+`uidNumber`, a `homeDirectory`, a `mail`. These are **attributes**, kept apart
+from credentials on purpose — a credential decides who may log in, an
+attribute is *published* to everybody allowed to search.
+
+```go
+a, err := directory.NewAttributes(
+    directory.Attribute{Name: "uidNumber", Values: []string{"1000"}},
+    directory.Attribute{Name: "homeDirectory", Values: []string{"/home/alice"}},
+    directory.Attribute{Name: "mail", Values: []string{"alice@example.org", "a.liddell@example.org"}},
+)
+id := directory.NewIdentity("alice", directory.WithPassword("s3cret"), directory.WithAttributes(a))
+
+id.Attributes().Get("UIDNUMBER")   // ["1000"]: case-insensitive, as LDAP is
+id.Attributes().Names()            // [uidNumber homeDirectory mail]: in order
+```
+
+- Names are **RFC 4512 attribute descriptions** in descriptor form, with
+  optional options: `mail`, `description;lang-fr`. The type and options are
+  case-insensitive and the order of the options does not matter (§2.5). The
+  numeric form (`2.5.4.35`) is refused: refusals are by name, and
+  `2.5.4.35` *is* `userPassword`.
+- Values are **strings** and are not interpreted: `"0100"` stays `"0100"`. An
+  empty value, or none, is refused; an exact repeat is kept once.
+- An `Attributes` is immutable, and can only be built by `NewAttributes`, so
+  one that exists has been checked. `CheckAttributeName` applies the same rule
+  on its own, for a configuration to refuse before anything is read.
+
+### What can never be an attribute
+
+| refused | why |
+|---|---|
+| `userPassword`, `authPassword`, `userPKCS12`, `sambaNTPassword`, `sambaLMPassword`, `unicodePwd`, `krbPrincipalKey`, `ipaNTHash`, `ipatokenOTPkey`, `oathSecret`, … (56 secrets; `ReservedAttributes()` returns the whole refusal list, 75 names, with reasons) | a secret, read off RFC 4519, RFC 3112, RFC 2798 and the Samba, Active Directory, MIT and Heimdal Kerberos, FreeIPA, 389-ds and OpenLDAP schemas |
+| any name containing `password`, `passwd`, `pwd`, `secret`, `credential`, `hash`, `privatekey` | a list only knows the schemas somebody read; the one standard name this would catch, `secretary` (RFC 4524), is allowed |
+| `sshPublicKey` | it has its own path, `WithPublicKeys`, so `Can(PublicKeys)` stays true |
+| `uid`, `userid`, `cn`, `commonName`, `objectClass` | the server derives them from the name it publishes the entry under |
+| `member`, `uniqueMember`, `memberUid`, `memberOf` | membership is what `Members` answers; a second answer would disagree |
+| `createTimestamp`, `modifyTimestamp`, `creatorsName`, `modifiersName`, `structuralObjectClass`, `governingStructureRule`, `subschemaSubentry`, `entryDN`, `entryUUID` | the server maintains them; a configuration could only forge them |
+
+### Group attributes
+
+A source may also describe its groups, through the optional
+`GroupAttributer` (`GroupAttributes(group) (Attributes, error)`). A source that
+does not implement it still compiles and behaves as before.
+`Set.GroupAttributes` asks every source: **the first source to give an
+attribute owns it**, so a `gidNumber` in a local file overrides the
+directory's while a `description` only the directory has comes through. Values
+are never merged across sources. A source without `GroupAttributer` is asked
+`Members`, to learn whether it has the group at all. Unlike `Members`, a
+**broken source is an error** even when another answered: the missing source
+may be the one whose `gidNumber` should have won.
+
+A person's attributes come with the person, from the source that owns the
+name — a `Set` does not assemble somebody out of two sources.
+
 ## The sources
 
 | package | reads | dependencies |
@@ -95,6 +153,10 @@ users "sql" {
   dsn_file = "/etc/authnd/dsn"        # a DSN holds a password: it lives in a file
   users    = "select login, null, nt_hash, ssh_keys from staff"   # by position: name, password, nt_hash, ssh_keys, totp_secret
   groups   = "select team, member from team_members"
+
+  # optional, read by column ALIAS: the first column is the name
+  users_attributes  = "select login, uid_number as \"uidNumber\", home as \"homeDirectory\", m.address as mail from staff left join mails m using (login)"
+  groups_attributes = "select team, gid as \"gidNumber\" from teams"
 }
 
 users "ldap" {
@@ -102,8 +164,58 @@ users "ldap" {
   base_dn            = "ou=people,dc=example,dc=org"
   bind_dn            = "cn=reader,dc=example,dc=org"
   bind_password_file = "/etc/authnd/bind.pw"
+  attributes         = ["mail", "uidNumber", "homeDirectory"]   # copied from each person's entry
+  group_attributes   = ["gidNumber"]                            # and from each group's
+}
+
+user "alice" {
+  password_file = "/etc/authnd/alice.pw"
+  attributes = {
+    uidNumber     = "1000"                  # a string: LDAP values are strings
+    homeDirectory = "/home/alice"
+    mail          = ["alice@example.org", "a.liddell@example.org"]
+    "description;lang-fr" = "une personne"
+  }
+}
+
+group "staff" {
+  members    = ["alice", "bob"]
+  attributes = { gidNumber = "100", description = "the people who work here" }   # a posixGroup needs a gidNumber
 }
 ```
+
+**The SQL attributes queries** (`sqldir.Queries.PeopleAttributes` and
+`GroupAttributes`) are optional, and the positional `users` and `groups`
+queries are unchanged — a sixth positional column is still refused, because
+attributes come by *name*, in their own query. Every column after the first is
+an attribute named by its alias; a column whose alias is not an attribute
+description (an unaliased expression) or names a credential is refused, with
+its column number, before a row is read. `NULL` and `''` are absent. A name may
+come back on several rows, and the values of all of them are kept — a join to a
+table of addresses gives a person several. A group named only in
+`groups_attributes` **exists**, with nobody in it: that is how a person's own
+primary group is written, and `Members` then answers `[]`.
+
+⛔ **The case of an alias is the database's.** PostgreSQL folds an unquoted
+alias to lower case: `as uidNumber` comes back as `uidnumber`. Attribute names
+are case-insensitive, so it is the same attribute and `Get("uidNumber")` finds
+it — but the spelling a server prints is the database's. Quote the alias
+(`as "uidNumber"`) where the spelling matters. SQLite keeps an alias as
+written.
+
+**The `attributes` map** in `user` and `group` blocks takes a string or a list
+of strings per name; `null` leaves an attribute out. A number is refused with
+the fix in the message (`write it as a string, "1000"`): this package does not
+choose how a number is spelled. The decoder hands it over as a `cty.Value`.
+
+**ldapdir** copies the names listed in `attributes` / `group_attributes`
+(`ldapdir.Config.Attributes`, `GroupAttributes`), matching the directory's
+spelling by RFC 4512 equivalence and keeping the configured one. It refuses,
+at `New` and in `Block.Check`, anything `CheckAttributeName` refuses, and also
+the `totp_attribute` (a secret under a name only this configuration knows), the
+group member attribute and the group naming attribute. Subtypes the directory
+returns besides (`description;lang-fr` for `description`) are not copied: ask
+for them by name.
 
 ```go
 src, err := hcldir.Open(block)      // or hcldir.OpenAll(blocks)
@@ -163,7 +275,11 @@ It is `glauth/ldap` underneath — an independent implementation — and it is
 itself read by **OpenLDAP's own `ldapsearch`** in CI, because a fixture built
 from one reading of a protocol can only ever confirm that reading. `d.Binds()`
 counts binds, so "this password was checked against the directory" is something
-a test can show rather than assume.
+a test can show rather than assume. `Person.Extra` and `Directory.GroupExtra`
+add any other attribute to a person's or a group's entry, and a search gets
+back only the attributes it asked for (RFC 4511 §4.5.1.8: none or `*` is all,
+`1.1` is none) — so a client that forgets to *ask* for an attribute fails its
+test, as it would fail against a real directory.
 
 ## Groups
 
@@ -214,7 +330,10 @@ holding the secret this package went out of its way not to hold.
 - **MD4** against RFC 1320's own test vectors, and the NT hash of `password`
   against the value every article about NTLM quotes.
 - **`sqldir`** against a real SQLite database through a real driver: actual SQL,
-  actual `NULL`s deciding what each person can be proved with.
+  actual `NULL`s deciding what each person can be proved with. The attributes
+  queries were also run once by hand against **PostgreSQL 18.6** through pgx
+  (not in CI): an unquoted alias came back lower-cased and was found anyway, a
+  quoted one kept its case, and an alias naming `userPassword` was refused.
 - **`ldapdir`** against an **independent LDAP server** (`glauth/ldap`) rather
   than a fake — a fake built from my own reading of the protocol could only
   confirm that reading. The fixture deliberately allows the **unauthenticated

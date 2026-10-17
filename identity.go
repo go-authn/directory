@@ -28,6 +28,10 @@ type Identity struct {
 	verify   func(password string) error
 	keys     []string
 	totp     []byte
+
+	// attrs describe; they prove nothing, and are kept apart from the
+	// credentials above so that neither can be mistaken for the other.
+	attrs Attributes
 }
 
 // A Credential is one way of proving somebody. They are named so that a server
@@ -127,6 +131,26 @@ func WithTOTPSecret(secret []byte) Option {
 func WithGroups(groups ...string) Option {
 	return func(i *Identity) { i.groups = append(i.groups, groups...) }
 }
+
+// WithAttributes says what is known about this person that proves nothing: a
+// uidNumber, a home directory, a mail address. Given twice, the second set is
+// added to the first, by the rules of [NewAttributes].
+//
+// It takes an [Attributes] rather than names and values because an Option
+// cannot fail, and a name that holds a secret must: NewAttributes is where it
+// is refused, so an Attributes that exists has already been checked.
+func WithAttributes(a Attributes) Option {
+	return func(i *Identity) {
+		for _, at := range a.list {
+			i.attrs.add(at.Name, at.Values)
+		}
+	}
+}
+
+// Attributes is what the source said about this person beyond their name and
+// credentials. They describe and prove nothing, and none of them is a secret:
+// see [CheckAttributeName].
+func (i *Identity) Attributes() Attributes { return i.attrs }
 
 // From records where this identity came from, for a server to print.
 func From(where string) Option {

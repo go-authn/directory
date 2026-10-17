@@ -48,7 +48,8 @@ func openSQL(b Block) (directory.Source, error) {
 		db.Close()
 		return nil, fmt.Errorf("the %s database is not answering: %w", b.Driver, err)
 	}
-	src, err := sqldir.New(db, sqldir.Queries{People: b.UsersQuery, Groups: b.GroupsQuery},
+	src, err := sqldir.New(db, sqldir.Queries{People: b.UsersQuery, Groups: b.GroupsQuery,
+		PeopleAttributes: b.UsersAttributesQuery, GroupAttributes: b.GroupsAttributesQuery},
 		sqldir.Named("a "+b.Driver+" database"))
 	if err != nil {
 		db.Close()

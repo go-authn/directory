@@ -8,6 +8,10 @@
 //	  dsn_file = "/etc/authnd/dsn"
 //	  users    = "select login, nt_hash, ssh_keys from staff"
 //	  groups   = "select team, member from team_members"
+//
+//	  # optional: by alias, the first column the name
+//	  users_attributes  = "select login, uid_number as \"uidNumber\", mail from staff"
+//	  groups_attributes = "select team, gid as \"gidNumber\" from teams"
 //	}
 //
 //	users "ldap" {
@@ -15,6 +19,8 @@
 //	  base_dn            = "ou=people,dc=example,dc=org"
 //	  bind_dn            = "cn=reader,dc=example,dc=org"
 //	  bind_password_file = "/etc/authnd/bind.pw"
+//	  attributes         = ["mail", "uidNumber", "homeDirectory"]
+//	  group_attributes   = ["gidNumber"]
 //	}
 //
 // It exists because two programs had written the same block: a file server
@@ -63,6 +69,11 @@ type Block struct {
 	DSNFile     string `hcl:"dsn_file,optional"`
 	UsersQuery  string `hcl:"users,optional"`
 	GroupsQuery string `hcl:"groups,optional"`
+	// UsersAttributesQuery and GroupsAttributesQuery describe, by alias: see
+	// [sqldir.Queries]. The first column is the name; every other column is
+	// an attribute, named as it is aliased.
+	UsersAttributesQuery  string `hcl:"users_attributes,optional"`
+	GroupsAttributesQuery string `hcl:"groups_attributes,optional"`
 
 	// ldap.
 	URL              string `hcl:"url,optional"`
@@ -80,6 +91,17 @@ type Block struct {
 	// nothing while looking like it had looked.
 	TOTPAttribute   string `hcl:"totp_attribute,optional"`
 	MemberAttribute string `hcl:"group_member_attribute,optional"`
+
+	// Attributes and GroupAttributes are what to copy from each person's and
+	// each group's entry, as they are named there: ["mail", "uidNumber"].
+	// They describe, and are checked like every attribute here -- one that
+	// holds a credential is refused by [Block.Check].
+	//
+	// Plural, and lists: `group_attribute` (singular, a string) is the one
+	// that NAMES a group, and the decoder refuses either written as the
+	// other.
+	Attributes      []string `hcl:"attributes,optional"`
+	GroupAttributes []string `hcl:"group_attributes,optional"`
 
 	// StartTLS upgrades a plaintext LDAP connection before binding. A
 	// directory reached over ldap:// without it sends the bind password in the
@@ -101,7 +123,9 @@ func (b Block) Check() error {
 	switch b.Kind {
 	case "sql":
 		if bad := named(map[string]string{"url": b.URL, "bind_dn": b.BindDN,
-			"base_dn": b.BaseDN, "bind_password_file": b.BindPasswordFile}); bad != "" {
+			"base_dn": b.BaseDN, "bind_password_file": b.BindPasswordFile,
+			"attributes":       strings.Join(b.Attributes, ","),
+			"group_attributes": strings.Join(b.GroupAttributes, ",")}); bad != "" {
 			return fmt.Errorf(`users "sql" has %s in it, which belongs to an ldap block`, bad)
 		}
 		if b.DSNFile == "" {
@@ -111,8 +135,21 @@ func (b Block) Check() error {
 			return fmt.Errorf(`users "sql" has no query for the people: the queries are yours, because your people are already in your shape`)
 		}
 	case "ldap":
-		if bad := named(map[string]string{"driver": b.Driver, "dsn_file": b.DSNFile}); bad != "" {
+		if bad := named(map[string]string{"driver": b.Driver, "dsn_file": b.DSNFile,
+			"users_attributes": b.UsersAttributesQuery, "groups_attributes": b.GroupsAttributesQuery}); bad != "" {
 			return fmt.Errorf(`users "ldap" has %s in it, which belongs to a sql block`, bad)
+		}
+		// Checked here, without a network, by the same rule ldapdir.New
+		// applies -- this file builds under -tags noldap, without ldapdir.
+		for _, f := range []struct {
+			field string
+			names []string
+		}{{"attributes", b.Attributes}, {"group_attributes", b.GroupAttributes}} {
+			for _, n := range f.names {
+				if err := directory.CheckAttributeName(n); err != nil {
+					return fmt.Errorf(`users "ldap" %s: %w`, f.field, err)
+				}
+			}
 		}
 		// A bind password in the url would be printed: by a server saying
 		// where somebody came from, by the LDAP package's errors, and then by
@@ -208,12 +245,21 @@ func named(fields map[string]string) string {
 // type still satisfied every interface it was declared against.
 //
 // So the wrapper is chosen by what the source can do. One more capability
-// means one more case here, and a test that asks for it.
+// means one more case here, and a test that asks for it:
+// [directory.GroupAttributer] is why there are four.
 func closing(src directory.Source, close func() error) directory.Source {
-	if lister, ok := src.(directory.GroupLister); ok {
-		return closingLister{closer{src, close}, lister}
+	c := closer{src, close}
+	lister, lists := src.(directory.GroupLister)
+	attr, describes := src.(directory.GroupAttributer)
+	switch {
+	case lists && describes:
+		return closingListerAttributer{closingLister{c, lister}, attr}
+	case lists:
+		return closingLister{c, lister}
+	case describes:
+		return closingAttributer{c, attr}
 	}
-	return closer{src, close}
+	return c
 }
 
 type closer struct {
@@ -230,6 +276,26 @@ type closingLister struct {
 }
 
 func (c closingLister) GroupNames() ([]string, error) { return c.lister.GroupNames() }
+
+// closingAttributer is a closer that can still describe its groups.
+type closingAttributer struct {
+	closer
+	attr directory.GroupAttributer
+}
+
+func (c closingAttributer) GroupAttributes(g string) (directory.Attributes, error) {
+	return c.attr.GroupAttributes(g)
+}
+
+// closingListerAttributer can do both.
+type closingListerAttributer struct {
+	closingLister
+	attr directory.GroupAttributer
+}
+
+func (c closingListerAttributer) GroupAttributes(g string) (directory.Attributes, error) {
+	return c.attr.GroupAttributes(g)
+}
 
 // cleartextLDAP refuses a plaintext ldap:// to another machine.
 //

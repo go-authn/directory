@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/go-authn/directory"
+	"github.com/zclconf/go-cty/cty"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -49,12 +50,34 @@ type UserBlock struct {
 	// authorized_keys file writes them, either inline or in a file.
 	AuthorizedKeys     []string `hcl:"authorized_keys,optional"`
 	AuthorizedKeysFile string   `hcl:"authorized_keys_file,optional"`
+
+	// Attributes describe this person and prove nothing:
+	//
+	//	attributes = { uidNumber = "1000", mail = ["alice@example.org"] }
+	//
+	// A cty.Value, which is what gohcl hands over for a map whose values
+	// are a string or a list of strings; build one by hand with cty.ObjectVal.
+	// A name holding a credential is refused (see
+	// [directory.CheckAttributeName]): the password, the NT hash, the keys and
+	// the one-time-code secret have their fields above.
+	Attributes cty.Value `hcl:"attributes,optional"`
 }
 
 // A GroupBlock names people, and is published as a posixGroup.
+//
+// A posixGroup needs a gidNumber (RFC 2307), which is an attribute:
+//
+//	group "staff" {
+//	  members    = ["alice", "bob"]
+//	  attributes = { gidNumber = "100", description = "the people who work here" }
+//	}
+//
+// This package does not insist on it -- it does not know what the group will
+// be published as -- and a server that publishes posixGroups does.
 type GroupBlock struct {
-	Name    string   `hcl:"name,label"`
-	Members []string `hcl:"members"`
+	Name       string    `hcl:"name,label"`
+	Members    []string  `hcl:"members"`
+	Attributes cty.Value `hcl:"attributes,optional"`
 }
 
 // File is the third source, beside a database and an LDAP server: the people
@@ -66,9 +89,14 @@ type GroupBlock struct {
 // configuration that answers it silently is one a reader cannot check.
 func File(users []UserBlock, groups []GroupBlock) (directory.Source, error) {
 	const where = "the configuration file"
-	src := &directory.Static{Name: where, Groups: map[string][]string{}}
+	src := &directory.Static{Name: where, Groups: map[string][]string{}, GroupAttrs: map[string]directory.Attributes{}}
 	for _, g := range groups {
 		src.Groups[g.Name] = g.Members
+		a, err := attributesOf(g.Attributes)
+		if err != nil {
+			return nil, fmt.Errorf("group %q: %w", g.Name, err)
+		}
+		src.GroupAttrs[g.Name] = a
 	}
 	seen := map[string]bool{}
 	for _, u := range users {
@@ -109,6 +137,11 @@ func File(users []UserBlock, groups []GroupBlock) (directory.Source, error) {
 		if len(keys) > 0 {
 			opts = append(opts, directory.WithPublicKeys(keys...))
 		}
+		attrs, err := attributesOf(u.Attributes)
+		if err != nil {
+			return nil, fmt.Errorf("user %q: %w", u.Name, err)
+		}
+		opts = append(opts, directory.WithAttributes(attrs))
 		src.People = append(src.People, directory.NewIdentity(u.Name, opts...))
 	}
 	return src, nil
@@ -154,4 +187,77 @@ func AuthorizedKeys(u UserBlock) ([]string, error) {
 		lines = append(lines, line)
 	}
 	return lines, nil
+}
+
+// attributesOf reads an `attributes = { ... }` map: each value a string, or a
+// list of strings for an attribute with several.
+//
+//	attributes = {
+//	  uidNumber     = "1000"
+//	  homeDirectory = "/home/alice"
+//	  mail          = ["alice@example.org", "a.liddell@example.org"]
+//	}
+//
+// A number is refused rather than converted: LDAP values are strings, and
+// this package does not decide how 1e3 or 0100 is spelled. Quoting it says
+// which string was meant. An attribute set to null is left out, as a block
+// leaves out any optional field. The attributes come in the order HCL gives
+// an object's keys, which is sorted; LDAP gives the order of an entry's
+// attributes no meaning.
+func attributesOf(v cty.Value) (directory.Attributes, error) {
+	if v == cty.NilVal || v.IsNull() {
+		return directory.Attributes{}, nil
+	}
+	if !v.IsWhollyKnown() {
+		return directory.Attributes{}, fmt.Errorf("attributes: a value is not known until something else is evaluated")
+	}
+	if t := v.Type(); !t.IsObjectType() && !t.IsMapType() {
+		return directory.Attributes{}, fmt.Errorf(`attributes is a map of names to values, such as { mail = "alice@example.org" }, not %s`, t.FriendlyName())
+	}
+	var list []directory.Attribute
+	for it := v.ElementIterator(); it.Next(); {
+		k, val := it.Element()
+		name := k.AsString()
+		if val.IsNull() {
+			continue
+		}
+		var values []string
+		switch t := val.Type(); {
+		case t == cty.String:
+			values = []string{val.AsString()}
+		case t.IsTupleType() || t.IsListType() || t.IsSetType():
+			for vi := val.ElementIterator(); vi.Next(); {
+				_, e := vi.Element()
+				s, err := attributeString(name, e)
+				if err != nil {
+					return directory.Attributes{}, err
+				}
+				values = append(values, s)
+			}
+		default:
+			if _, err := attributeString(name, val); err != nil {
+				return directory.Attributes{}, err
+			}
+		}
+		list = append(list, directory.Attribute{Name: name, Values: values})
+	}
+	a, err := directory.NewAttributes(list...)
+	if err != nil {
+		return directory.Attributes{}, fmt.Errorf("attributes: %w", err)
+	}
+	return a, nil
+}
+
+// attributeString is one value, which must be a string.
+func attributeString(name string, v cty.Value) (string, error) {
+	switch {
+	case v.IsNull():
+		return "", fmt.Errorf("attributes: %s has a null among its values", name)
+	case v.Type() == cty.String:
+		return v.AsString(), nil
+	case v.Type() == cty.Number:
+		return "", fmt.Errorf(`attributes: %s is the number %s: write it as a string, "%[2]s" -- an LDAP value is a string, and this does not choose how a number is spelled`,
+			name, v.AsBigFloat().Text('f', -1))
+	}
+	return "", fmt.Errorf("attributes: %s is %s: an attribute's value is a string, or a list of strings", name, v.Type().FriendlyName())
 }

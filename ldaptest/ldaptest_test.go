@@ -3,10 +3,12 @@ package ldaptest_test
 import (
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/go-authn/directory/ldaptest"
+	"github.com/go-ldap/ldap/v3"
 )
 
 // A fixture that lies is worse than no fixture: every test built on it would
@@ -19,7 +21,8 @@ func TestOpenLDAPCanReadIt(t *testing.T) {
 			"dora": {Password: "hunter2", NTHash: "8846f7eaee8fb117ad06bdd830b7586c"},
 			"eli":  {Password: "swordfish"},
 		},
-		Groups: map[string][]string{"engineers": {"dora", "eli"}},
+		Groups:     map[string][]string{"engineers": {"dora", "eli"}},
+		GroupExtra: map[string]map[string][]string{"engineers": {"gidNumber": {"500"}}},
 	})
 
 	out, err := run(ldapsearch, "-x", "-H", d.URL, "-D", d.ReaderDN, "-w", d.ReaderPassword,
@@ -46,12 +49,16 @@ func TestOpenLDAPCanReadIt(t *testing.T) {
 
 	// The groups, in the search a reader actually makes for them.
 	out, err = run(ldapsearch, "-x", "-H", d.URL, "-D", d.ReaderDN, "-w", d.ReaderPassword,
-		"-b", d.GroupsDN, "(&(objectClass=posixGroup)(cn=engineers))", "memberUid")
+		"-b", d.GroupsDN, "(&(objectClass=posixGroup)(cn=engineers))", "memberUid", "gidNumber")
 	if err != nil {
 		t.Fatalf("ldapsearch: %v\n%s", err, out)
 	}
 	if !strings.Contains(out, "memberUid: dora") || !strings.Contains(out, "memberUid: eli") {
 		t.Errorf("the group did not come back:\n%s", out)
+	}
+	// A group's other attributes, which ldapdir copies as GroupAttributes.
+	if !strings.Contains(out, "gidNumber: 500") {
+		t.Errorf("the group's gidNumber did not come back:\n%s", out)
 	}
 }
 
@@ -172,4 +179,54 @@ func needLDAPSearch(t *testing.T) string {
 		t.Skip("no ldapsearch here: the foreign judge is OpenLDAP's own client")
 	}
 	return p
+}
+
+// A search gets back what it asked for, and only that (RFC 4511 §4.5.1.8):
+// a client that forgot to ASK for an attribute must not be handed it, or its
+// tests pass on a directory that does not exist.
+func TestASearchGetsTheAttributesItAskedFor(t *testing.T) {
+	d := serve(t, &ldaptest.Directory{
+		People: map[string]ldaptest.Person{"dora": {
+			Password: "hunter2", NTHash: "8846f7eaee8fb117ad06bdd830b7586c",
+			Extra: map[string][]string{"mail": {"dora@example.org"}, "description;lang-fr": {"une personne"}},
+		}},
+	})
+	c, err := ldap.DialURL(d.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Bind(d.ReaderDN, d.ReaderPassword); err != nil {
+		t.Fatal(err)
+	}
+	names := func(attrs ...string) string {
+		t.Helper()
+		res, err := c.Search(ldap.NewSearchRequest(d.PeopleDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases,
+			0, 0, false, "(objectClass=posixAccount)", attrs, nil))
+		if err != nil || len(res.Entries) != 1 {
+			t.Fatalf("%v: %v", attrs, err)
+		}
+		var got []string
+		for _, a := range res.Entries[0].Attributes {
+			got = append(got, a.Name)
+		}
+		slices.Sort(got)
+		return strings.Join(got, ",")
+	}
+	for _, tc := range []struct {
+		ask  []string
+		want string
+	}{
+		{[]string{"UID"}, "uid"},
+		{[]string{"uid", "mail"}, "mail,uid"},
+		{[]string{"description"}, "description;lang-fr"},
+		{[]string{"description;lang-de"}, ""},
+		{[]string{"1.1"}, ""},
+		{[]string{"*"}, "description;lang-fr,mail,sambaNTPassword,uid"},
+		{nil, "description;lang-fr,mail,sambaNTPassword,uid"},
+	} {
+		if got := names(tc.ask...); got != tc.want {
+			t.Errorf("asked for %v, got %q, want %q", tc.ask, got, tc.want)
+		}
+	}
 }
