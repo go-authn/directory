@@ -62,8 +62,9 @@ import (
 // Numbers come back as their decimal text: an LDAP value is a string.
 //
 // ⛔ The CASE of an alias is the database's. PostgreSQL folds an unquoted
-// alias to lower case, so `as uidNumber` comes back as uidnumber; SQLite and
-// MySQL keep it as written. An attribute name is case-insensitive in LDAP, so
+// alias to lower case, so `as uidNumber` comes back as uidnumber; SQLite keeps
+// it as written (MySQL is documented to, and was not tested here). An
+// attribute name is case-insensitive in LDAP, so
 // both are the same attribute, and Get("uidNumber") finds either -- but the
 // spelling a server prints is the one the database returned. Quote the alias
 // (`as "uidNumber"`) where the spelling matters.
