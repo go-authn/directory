@@ -84,11 +84,11 @@ type Block struct {
 	// (|(objectClass=posixAccount)(objectClass=account)(objectClass=uidObject)).
 	// ⛔ Wider than the (objectClass=posixAccount) of v0.13.0 and before:
 	// write that to keep the old set of people.
-	UserFilter       string `hcl:"user_filter,optional"`
-	UserAttribute    string `hcl:"user_attribute,optional"`
-	GroupBaseDN      string `hcl:"group_base_dn,optional"`
-	GroupFilter      string `hcl:"group_filter,optional"`
-	GroupAttribute   string `hcl:"group_attribute,optional"`
+	UserFilter     string `hcl:"user_filter,optional"`
+	UserAttribute  string `hcl:"user_attribute,optional"`
+	GroupBaseDN    string `hcl:"group_base_dn,optional"`
+	GroupFilter    string `hcl:"group_filter,optional"`
+	GroupAttribute string `hcl:"group_attribute,optional"`
 	// TOTPAttribute is where a one-time-code secret lives, in base32. There
 	// is no standard attribute for it -- FreeIPA has ipatokenOTPkey, other
 	// schemas have oathSecret -- so it has no default: a guess would read
