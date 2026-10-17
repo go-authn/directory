@@ -40,10 +40,10 @@ import (
 // Config is where the directory is and how it is laid out.
 //
 // The defaults are a small site's people (posixAccount, account or
-// uidObject: see [DefaultUserFilter]) and posixGroups, which is what an
-// OpenLDAP put up for a team looks like. A directory using groupOfNames says
-// so with MemberAttribute, and the DNs it holds are reduced to their first
-// value so that a member reads as a name everywhere else.
+// uidObject: see [DefaultUserFilter]) and groups (posixGroup or groupOfNames:
+// see [DefaultGroupFilter]), which is what an OpenLDAP put up for a team, or
+// go-authn/authnd, looks like. A member DN is mapped to the person this source
+// imported under that DN, and to nobody else.
 type Config struct {
 	URL    string // ldaps://host, or ldap://host for a plaintext one
 	BaseDN string // where the people are
@@ -89,10 +89,19 @@ type Config struct {
 	// member attribute is refused, since Members is how membership is read.
 	GroupAttributes []string
 
-	GroupBaseDN     string // default: BaseDN
-	GroupFilter     string // default (objectClass=posixGroup)
-	GroupAttribute  string // default cn
-	MemberAttribute string // default memberUid
+	GroupBaseDN    string // default: BaseDN
+	GroupFilter    string // default DefaultGroupFilter: posixGroup or groupOfNames
+	GroupAttribute string // default cn
+
+	// MemberAttribute, when set, is the ONE attribute a group's members are
+	// read from, and overrides the default. Left empty, both are read:
+	// memberUid (a posixGroup's, names) and member (a groupOfNames's, DNs).
+	//
+	// Either way a value that is a DN is mapped to a person only through
+	// the people this source imports -- the entries its own people search
+	// returns -- by distinguishedNameMatch on their DNs. A DN outside them,
+	// or naming nobody imported, maps to nobody: see [Source.Members].
+	MemberAttribute string
 
 	// TLS is used for ldaps:// and for StartTLS. A nil one means TLS 1.2 and
 	// the system roots, which is the right default and the one a caller
@@ -128,6 +137,20 @@ type Config struct {
 // nothing before. A plain inetOrgPerson with neither class is still left out.
 const DefaultUserFilter = "(|(objectClass=posixAccount)(objectClass=account)(objectClass=uidObject))"
 
+// DefaultGroupFilter is the GroupFilter a [Config] that names none gets: a
+// posixGroup (RFC 2307, names in memberUid) or a groupOfNames (RFC 4519
+// §3.5, DNs in member).
+//
+// ⛔ Until v0.13.0 it was (objectClass=posixGroup) alone, and
+// go-authn/authnd publishes a group without a gidNumber as a groupOfNames,
+// since RFC 2307 makes gidNumber MUST in posixGroup: such a group was "no
+// such group" here, and an @group rule naming it granted nothing. The cost is
+// that the default is WIDER: an institution's groupOfNames groups are now
+// groups here. It adds no PERSON -- a member DN maps only to somebody the
+// people search already imported -- but a group that was invisible can now
+// grant what an @group rule names.
+const DefaultGroupFilter = "(|(objectClass=posixGroup)(objectClass=groupOfNames))"
+
 // A Source reads an LDAP directory.
 type Source struct {
 	cfg Config
@@ -161,9 +184,8 @@ func New(cfg Config) (*Source, error) {
 	cfg.UserFilter = or(cfg.UserFilter, DefaultUserFilter)
 	cfg.UserAttribute = or(cfg.UserAttribute, "uid")
 	cfg.GroupBaseDN = or(cfg.GroupBaseDN, cfg.BaseDN)
-	cfg.GroupFilter = or(cfg.GroupFilter, "(objectClass=posixGroup)")
+	cfg.GroupFilter = or(cfg.GroupFilter, DefaultGroupFilter)
 	cfg.GroupAttribute = or(cfg.GroupAttribute, "cn")
-	cfg.MemberAttribute = or(cfg.MemberAttribute, "memberUid")
 	if err := checkCopied(cfg); err != nil {
 		return nil, err
 	}
@@ -439,7 +461,6 @@ func (s *Source) bindAs(dn string) func(string) error {
 	}
 }
 
-// Members expands a group.
 // GroupNames is every group under the group base, by the same filter Members
 // uses -- without the name, which is the only difference between asking about
 // one group and asking for all of them.
@@ -465,6 +486,22 @@ func (s *Source) GroupNames() ([]string, error) {
 	return slices.Compact(names), nil
 }
 
+// Members expands a group.
+//
+// The values are read from MemberAttribute when it is configured, and
+// otherwise from memberUid (names) and member (DNs) both. A value that is a
+// DN -- every member value, and with an explicit MemberAttribute any value
+// that parses as one -- is mapped to a name ONLY through the people this
+// source imports: the entries its people search returns, compared with the
+// DN by distinguishedNameMatch (RFC 4517 §4.2.15; types case-insensitively,
+// values by caseIgnoreMatch, the equality rule of uid, cn, ou, o and dc, and
+// multi-valued RDNs in any order).
+//
+// ⛔ It is never read out of the DN. This used to take the value of the
+// first RDN, so "uid=alice,ou=elsewhere,dc=example,dc=org" -- an entry the
+// people search never returned, in a part of the tree somebody else may
+// write -- made alice a member. A DN outside the imported people, or naming
+// nobody, maps to nobody.
 func (s *Source) Members(group string) ([]string, error) {
 	c, err := s.dial()
 	if err != nil {
@@ -472,10 +509,11 @@ func (s *Source) Members(group string) ([]string, error) {
 	}
 	defer c.Close()
 
+	attrs := s.memberAttributes()
 	filter := fmt.Sprintf("(&%s(%s=%s))", s.cfg.GroupFilter, s.cfg.GroupAttribute, ldap.EscapeFilter(group))
 	res, err := c.Search(ldap.NewSearchRequest(
 		s.cfg.GroupBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
-		filter, []string{s.cfg.MemberAttribute}, nil,
+		filter, attrs, nil,
 	))
 	if err != nil {
 		return nil, fmt.Errorf("ldapdir: searching for group %q: %w", group, err)
@@ -483,29 +521,104 @@ func (s *Source) Members(group string) ([]string, error) {
 	if len(res.Entries) == 0 {
 		return nil, fmt.Errorf("%w: %q, under %s", directory.ErrNoSuchGroup, group, s.cfg.GroupBaseDN)
 	}
+	var people []person // read once, when the first DN needs it
 	var members []string
+	add := func(name string) {
+		if !slices.Contains(members, name) {
+			members = append(members, name)
+		}
+	}
 	for _, e := range res.Entries {
-		for _, m := range e.GetAttributeValues(s.cfg.MemberAttribute) {
-			members = append(members, memberName(m))
+		for _, a := range attrs {
+			for _, v := range e.GetAttributeValues(a) {
+				dn, isDN := s.memberDN(a, v)
+				if !isDN {
+					add(v)
+					continue
+				}
+				if people == nil {
+					if people, err = s.imported(c); err != nil {
+						return nil, err
+					}
+				}
+				if name, ok := whoIs(people, dn); ok {
+					add(name)
+				}
+			}
 		}
 	}
 	return members, nil
 }
 
-// memberName reduces what a group holds to the name everything else uses.
+// memberAttributes is what a group's members are read from.
+func (s *Source) memberAttributes() []string {
+	if s.cfg.MemberAttribute != "" {
+		return []string{s.cfg.MemberAttribute}
+	}
+	return []string{"memberUid", "member"}
+}
+
+// memberDN says whether a value of attribute a is a DN, and parses it.
 //
-// posixGroup holds names in memberUid; groupOfNames holds DNs in member. A
-// server comparing "alice" against "uid=alice,ou=people,dc=example,dc=org"
-// finds no match and tells alice she is not in her own group.
-func memberName(m string) string {
-	if !strings.Contains(m, "=") {
-		return m
+// member and uniqueMember hold DNs (RFC 4519 §2.17, §2.40): a value of
+// either that does not parse is a DN naming nobody. memberUid holds names
+// (RFC 2307), and by default is taken as written. A configured
+// MemberAttribute of another type is somebody else's layout, so a value of it
+// is a DN when it parses as one -- and then goes through the same mapping.
+func (s *Source) memberDN(a, v string) (*ldap.DN, bool) {
+	dnSyntax := strings.EqualFold(a, "member") || strings.EqualFold(a, "uniqueMember")
+	if !dnSyntax && s.cfg.MemberAttribute == "" {
+		return nil, false
 	}
-	dn, err := ldap.ParseDN(m)
-	if err != nil || len(dn.RDNs) == 0 || len(dn.RDNs[0].Attributes) == 0 {
-		return m
+	dn, err := ldap.ParseDN(v)
+	if err != nil || len(dn.RDNs) == 0 {
+		if dnSyntax {
+			return &ldap.DN{}, true
+		}
+		return nil, false
 	}
-	return dn.RDNs[0].Attributes[0].Value
+	return dn, true
+}
+
+// A person is somebody the people search imported, by the DN it returned.
+type person struct {
+	dn   *ldap.DN
+	name string
+}
+
+// imported is the people this source imports, as Identities reads them: the
+// same base, filter and naming attribute.
+func (s *Source) imported(c *ldap.Conn) ([]person, error) {
+	res, err := c.Search(ldap.NewSearchRequest(
+		s.cfg.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+		s.cfg.UserFilter, []string{s.cfg.UserAttribute}, nil,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("ldapdir: searching for people, to read a group's member DNs: %w", err)
+	}
+	out := []person{}
+	for _, e := range res.Entries {
+		name := e.GetAttributeValue(s.cfg.UserAttribute)
+		dn, err := ldap.ParseDN(e.DN)
+		if name == "" || err != nil {
+			continue
+		}
+		out = append(out, person{dn: dn, name: name})
+	}
+	return out, nil
+}
+
+// whoIs is the imported person whose DN is dn, by distinguishedNameMatch.
+func whoIs(people []person, dn *ldap.DN) (string, bool) {
+	if len(dn.RDNs) == 0 {
+		return "", false
+	}
+	for _, p := range people {
+		if p.dn.EqualFold(dn) {
+			return p.name, true
+		}
+	}
+	return "", false
 }
 
 // cleartext refuses a plaintext ldap:// to another machine.

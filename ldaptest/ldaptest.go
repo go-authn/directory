@@ -103,6 +103,10 @@ type Directory struct {
 	// GroupExtra are any other attributes of a group in Groups, by the
 	// group's cn: {"staff": {"gidNumber": {"100"}}}.
 	GroupExtra map[string]map[string][]string
+	// GroupsOfNames are groupOfNames groups (RFC 4519 §3.5), by cn, holding
+	// DNs in member: any DNs, so that a test can put in one that names
+	// nobody, or somebody elsewhere.
+	GroupsOfNames map[string][]string
 
 	// BaseDN defaults to dc=example,dc=org, with people under
 	// ou=people and groups under ou=groups.
@@ -214,72 +218,89 @@ func (s *Server) Bind(bindDN, password string, _ net.Conn) (server.LDAPResultCod
 	return server.LDAPResultInvalidCredentials, nil
 }
 
-// Search answers the two searches a directory reader makes: the people, and
-// one group's members.
+// Search answers a subtree search of the people, the groups, or both, as a
+// directory does: by base and by filter.
 func (s *Server) Search(_ string, req server.SearchRequest, _ net.Conn) (server.ServerSearchResult, error) {
+	// ⛔ Every search APPLIES its filter and its base, so that which classes
+	// a client asks for, and where, decides what it gets, as in a real
+	// directory. Neither was applied: every person came back for every
+	// filter, and a filter that merely CONTAINED "posixGroup" was a group
+	// search -- so a client's default filters could be anything at all
+	// without a test noticing.
+	filter, err := server.CompileFilter(req.Filter)
+	if err != nil {
+		return server.ServerSearchResult{ResultCode: server.LDAPResultOperationsError}, err
+	}
 	var entries []*server.Entry
-	switch {
-	case strings.Contains(req.Filter, "posixGroup"):
-		for name, members := range s.d.Groups {
-			// A filter naming one group asks about that one; a filter that
-			// names none is an ENUMERATION, which a real directory answers
-			// with every group it has (and may refuse -- that is a
-			// permission, not a shape).
-			if strings.Contains(req.Filter, "cn=") && !strings.Contains(req.Filter, "cn="+name+")") {
-				continue
-			}
-			attrs := []*server.EntryAttribute{
-				{Name: "objectClass", Values: []string{"top", "posixGroup"}},
-				{Name: "cn", Values: []string{name}},
-				{Name: "memberUid", Values: members},
-			}
-			for an, values := range s.d.GroupExtra[name] {
-				attrs = append(attrs, &server.EntryAttribute{Name: an, Values: values})
-			}
-			entries = append(entries, &server.Entry{DN: "cn=" + name + "," + s.GroupsDN, Attributes: attrs})
+	for _, e := range s.entries() {
+		if !under(e.DN, req.BaseDN) {
+			continue
 		}
-	default:
-		// ⛔ The people search APPLIES its filter, so that which classes a
-		// client asks for decides who it gets, as in a real directory. It did
-		// not: every person came back for every filter, and a client's
-		// default filter could be anything at all without a test noticing.
-		filter, err := server.CompileFilter(req.Filter)
-		if err != nil {
-			return server.ServerSearchResult{ResultCode: server.LDAPResultOperationsError}, err
+		ok, code := server.ServerApplyFilter(filter, e)
+		if code != server.LDAPResultSuccess {
+			return server.ServerSearchResult{ResultCode: code}, fmt.Errorf("ldaptest: filter %q cannot be applied here", req.Filter)
 		}
-		for uid, p := range s.d.People {
-			classes := p.ObjectClasses
-			if classes == nil {
-				classes = DefaultObjectClasses
-			}
-			attrs := []*server.EntryAttribute{
-				{Name: "objectClass", Values: slices.Clone(classes)},
-				{Name: "uid", Values: []string{uid}},
-			}
-			if p.NTHash != "" {
-				attrs = append(attrs, &server.EntryAttribute{Name: "sambaNTPassword", Values: []string{p.NTHash}})
-			}
-			if len(p.SSHKeys) > 0 {
-				attrs = append(attrs, &server.EntryAttribute{Name: "sshPublicKey", Values: p.SSHKeys})
-			}
-			if p.TOTPSecret != "" {
-				attrs = append(attrs, &server.EntryAttribute{Name: "oathSecret", Values: []string{p.TOTPSecret}})
-			}
-			for name, values := range p.Extra {
-				attrs = append(attrs, &server.EntryAttribute{Name: name, Values: values})
-			}
-			e := &server.Entry{DN: s.DN(uid), Attributes: attrs}
-			ok, code := server.ServerApplyFilter(filter, e)
-			if code != server.LDAPResultSuccess {
-				return server.ServerSearchResult{ResultCode: code}, fmt.Errorf("ldaptest: filter %q cannot be applied here", req.Filter)
-			}
-			if ok {
-				entries = append(entries, e)
-			}
+		if ok {
+			entries = append(entries, e)
 		}
 	}
 	selected(entries, req.Attributes)
 	return server.ServerSearchResult{Entries: entries, ResultCode: server.LDAPResultSuccess}, nil
+}
+
+// under reports whether dn is base or below it, as a subtree search asks.
+func under(dn, base string) bool {
+	dn, base = strings.ToLower(dn), strings.ToLower(base)
+	return base == "" || dn == base || strings.HasSuffix(dn, ","+base)
+}
+
+// entries is the whole directory, built afresh for each search: the people,
+// the posixGroups and the groupOfNames groups.
+func (s *Server) entries() []*server.Entry {
+	var out []*server.Entry
+	for uid, p := range s.d.People {
+		classes := p.ObjectClasses
+		if classes == nil {
+			classes = DefaultObjectClasses
+		}
+		attrs := []*server.EntryAttribute{
+			{Name: "objectClass", Values: slices.Clone(classes)},
+			{Name: "uid", Values: []string{uid}},
+		}
+		if p.NTHash != "" {
+			attrs = append(attrs, &server.EntryAttribute{Name: "sambaNTPassword", Values: []string{p.NTHash}})
+		}
+		if len(p.SSHKeys) > 0 {
+			attrs = append(attrs, &server.EntryAttribute{Name: "sshPublicKey", Values: p.SSHKeys})
+		}
+		if p.TOTPSecret != "" {
+			attrs = append(attrs, &server.EntryAttribute{Name: "oathSecret", Values: []string{p.TOTPSecret}})
+		}
+		for name, values := range p.Extra {
+			attrs = append(attrs, &server.EntryAttribute{Name: name, Values: values})
+		}
+		out = append(out, &server.Entry{DN: s.DN(uid), Attributes: attrs})
+	}
+	group := func(name, class, member string, members []string) {
+		attrs := []*server.EntryAttribute{
+			{Name: "objectClass", Values: []string{"top", class}},
+			{Name: "cn", Values: []string{name}},
+		}
+		if len(members) > 0 {
+			attrs = append(attrs, &server.EntryAttribute{Name: member, Values: members})
+		}
+		for an, values := range s.d.GroupExtra[name] {
+			attrs = append(attrs, &server.EntryAttribute{Name: an, Values: values})
+		}
+		out = append(out, &server.Entry{DN: "cn=" + name + "," + s.GroupsDN, Attributes: attrs})
+	}
+	for name, members := range s.d.Groups {
+		group(name, "posixGroup", "memberUid", members)
+	}
+	for name, members := range s.d.GroupsOfNames {
+		group(name, "groupOfNames", "member", members)
+	}
+	return out
 }
 
 func or(a, b string) string {
