@@ -47,7 +47,16 @@ func groupsDirectory(t *testing.T) *ldaptest.Server {
 			"uid=plain,ou=people,dc=example,dc=org",
 			// Not a DN at all.
 			"not a dn",
-		}},
+		},
+			// ⛔ Only forgeries of alice, and alice herself NOT listed: in
+			// staff the real alice hides a spoof that maps to her, so a test
+			// of staff alone passes against a mapping that reads uid= out of
+			// any DN. Here a correct mapping finds nobody.
+			"forged": {
+				"uid=alice,ou=elsewhere,dc=example,dc=org",
+				"cn=alice,ou=people,dc=example,dc=org",
+				"uid=alice,ou=people,dc=example,dc=net",
+			}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -91,8 +100,14 @@ func TestAGroupOfNamesByDefault(t *testing.T) {
 	if err != nil || !slices.Equal(team, []string{"carol"}) {
 		t.Errorf("team = %v, %v", team, err)
 	}
+	// The forgeries on their own: no DN in it is one the people search
+	// returned, so the group exists and grants nobody.
+	forged, err := src.Members("forged")
+	if err != nil || len(forged) != 0 {
+		t.Errorf("forged = %v, %v; want nobody: uid=alice under another branch, or alice under another naming attribute, is not alice", forged, err)
+	}
 	names, err := src.GroupNames()
-	if err != nil || !slices.Equal(names, []string{"staff", "team"}) {
+	if err != nil || !slices.Equal(names, []string{"forged", "staff", "team"}) {
 		t.Errorf("GroupNames = %v, %v", names, err)
 	}
 	if ldapdir.DefaultGroupFilter != "(|(objectClass=posixGroup)(objectClass=groupOfNames))" {
@@ -193,5 +208,22 @@ func TestADNInAConfiguredMemberAttribute(t *testing.T) {
 	slices.Sort(got)
 	if !slices.Equal(got, []string{"alice", "carol"}) {
 		t.Errorf("staff = %v, want [alice carol]", got)
+	}
+}
+
+// The same forgery in a configured memberUid, with the real alice absent:
+// nothing else in the group can hide it.
+func TestAForgedDNInAConfiguredMemberAttributeMapsToNobody(t *testing.T) {
+	d, err := ldaptest.NewServer(&ldaptest.Directory{
+		People: map[string]ldaptest.Person{"alice": {Password: "a"}},
+		Groups: map[string][]string{"staff": {"uid=alice,ou=elsewhere,dc=example,dc=org"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	src := groupsSource(t, d, ldapdir.Config{MemberAttribute: "memberUid"})
+	if got, err := src.Members("staff"); err != nil || len(got) != 0 {
+		t.Errorf("staff = %v, %v; want nobody", got, err)
 	}
 }
