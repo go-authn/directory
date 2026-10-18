@@ -80,16 +80,25 @@ type Block struct {
 	BindDN           string `hcl:"bind_dn,optional"`
 	BindPasswordFile string `hcl:"bind_password_file,optional"`
 	BaseDN           string `hcl:"base_dn,optional"`
-	UserFilter       string `hcl:"user_filter,optional"`
-	UserAttribute    string `hcl:"user_attribute,optional"`
-	GroupBaseDN      string `hcl:"group_base_dn,optional"`
-	GroupFilter      string `hcl:"group_filter,optional"`
-	GroupAttribute   string `hcl:"group_attribute,optional"`
+	// UserFilter defaults to ldapdir.DefaultUserFilter,
+	// (|(objectClass=posixAccount)(objectClass=account)(objectClass=uidObject)).
+	// ⛔ Wider than the (objectClass=posixAccount) of v0.13.0 and before:
+	// write that to keep the old set of people.
+	UserFilter    string `hcl:"user_filter,optional"`
+	UserAttribute string `hcl:"user_attribute,optional"`
+	GroupBaseDN   string `hcl:"group_base_dn,optional"`
+	// GroupFilter defaults to ldapdir.DefaultGroupFilter, posixGroup or
+	// groupOfNames. ⛔ Wider than the (objectClass=posixGroup) of v0.13.0.
+	GroupFilter    string `hcl:"group_filter,optional"`
+	GroupAttribute string `hcl:"group_attribute,optional"`
 	// TOTPAttribute is where a one-time-code secret lives, in base32. There
 	// is no standard attribute for it -- FreeIPA has ipatokenOTPkey, other
 	// schemas have oathSecret -- so it has no default: a guess would read
 	// nothing while looking like it had looked.
-	TOTPAttribute   string `hcl:"totp_attribute,optional"`
+	TOTPAttribute string `hcl:"totp_attribute,optional"`
+	// MemberAttribute, when set, is the one attribute a group's members are
+	// read from; empty reads memberUid and member both. A DN maps only to a
+	// person this block imported: see ldapdir.Source.Members.
 	MemberAttribute string `hcl:"group_member_attribute,optional"`
 
 	// Attributes and GroupAttributes are what to copy from each person's and

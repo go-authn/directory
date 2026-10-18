@@ -153,42 +153,6 @@ func TestADirectoryThatIsNotThere(t *testing.T) {
 	}
 }
 
-// A group holding DNs rather than names: groupOfNames is what a directory
-// that is not a small site's OpenLDAP uses, and a server comparing "alice"
-// against "uid=alice,ou=people,dc=example,dc=org" tells alice she is not in
-// her own group.
-func TestAGroupThatHoldsDNs(t *testing.T) {
-	d, err := ldaptest.NewServer(&ldaptest.Directory{
-		Groups: map[string][]string{"staff": {
-			"uid=alice,ou=people,dc=example,dc=org",
-			"cn=bob,ou=people,dc=example,dc=org",
-			"carol",                        // a name, in the same group
-			"not a dn = but has an equals", // and something that parses as neither
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-	src, err := ldapdir.New(ldapdir.Config{
-		URL: d.URL, BaseDN: d.PeopleDN, GroupBaseDN: d.GroupsDN,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	members, err := src.Members("staff")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := strings.Join(members, ",")
-	if !strings.Contains(got, "alice") || !strings.Contains(got, "bob") || !strings.Contains(got, "carol") {
-		t.Errorf("members = %q -- a DN must reduce to the name everything else uses", got)
-	}
-	if src.Describe() == "" {
-		t.Error("a source with no description")
-	}
-}
-
 // A URL is printed -- by Describe, by errors, by callers' logs -- so one
 // carrying a password is refused before anything can print it.
 func TestAURLWithAPasswordInItIsRefused(t *testing.T) {

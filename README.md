@@ -233,6 +233,69 @@ Two build tags leave a kind out entirely: `-tags nosql` and `-tags noldap`. For
 the program that uses this, `nosql` is usually the biggest single lever it has
 — the three database drivers weigh about 12 MB.
 
+### Who an LDAP directory's people are: the defaults
+
+| setting (`users "ldap"` / `ldapdir.Config`) | default |
+|---|---|
+| `user_filter` / `UserFilter` | `(\|(objectClass=posixAccount)(objectClass=account)(objectClass=uidObject))` — `ldapdir.DefaultUserFilter` |
+| `user_attribute` / `UserAttribute` | `uid` |
+| `group_base_dn` / `GroupBaseDN` | `base_dn` |
+| `group_filter` / `GroupFilter` | `(\|(objectClass=posixGroup)(objectClass=groupOfNames))` — `ldapdir.DefaultGroupFilter` |
+| `group_attribute` / `GroupAttribute` | `cn` |
+| `group_member_attribute` / `MemberAttribute` | none: `memberUid` (names) **and** `member` (DNs); set, it is the one attribute read |
+
+The three classes are the standard ones that carry a `uid`: `posixAccount`
+(RFC 2307, a person with a uidNumber, gidNumber and home directory), `account`
+(RFC 4524 §3.1) and `uidObject` (RFC 4519 §3.14).
+[go-authn/authnd](https://github.com/go-authn/authnd) publishes a person
+without the POSIX attributes as an `account` or an `inetOrgPerson`, and puts
+`uidObject` on every person; under the old default such a person was not read
+at all.
+
+⛔ **The default user filter is WIDER than it was up to v0.13.0**, which was
+`(objectClass=posixAccount)`. A directory holding `account` or `uidObject`
+entries that are not posixAccounts — service accounts, hosts named by uid,
+people imported from elsewhere — now gives them to every program that kept
+the default, and those people can then be checked against the directory by a
+bind. A plain `inetOrgPerson` with none of the three classes is still not read
+(`TestTheDefaultUserFilter`). To keep exactly the old set, write the old filter:
+
+```hcl
+users "ldap" {
+  # ...
+  user_filter = "(objectClass=posixAccount)"
+}
+```
+
+⛔ **The default group filter is WIDER than it was up to v0.13.0**, which was
+`(objectClass=posixGroup)` with members in `memberUid`. A `groupOfNames` is now
+a group too, its members read from `member`. go-authn/authnd publishes a group
+without a `gidNumber` that way, since RFC 2307 makes `gidNumber` MUST in
+`posixGroup`, and under the old default such a group was "no such group" and an
+`@group` rule naming it granted nothing.
+
+This adds **no person**. A `member` value is a DN, and it maps to somebody only
+when it is, by distinguishedNameMatch (RFC 4517 §4.2.15), the DN of an entry the
+people search returned. A DN outside those entries, or naming nobody, maps to
+nobody, and so does `uid=alice,ou=elsewhere,…` when alice was imported from
+`ou=people`. The value is never read out of the DN. What does change is that
+an institution's `groupOfNames` groups become **groups** here, and an `@group`
+rule naming one now grants what it says (`TestTheGroupFilterAddsNoIdentity`,
+`TestAGroupOfNamesByDefault`). To keep exactly the old groups:
+
+```hcl
+users "ldap" {
+  # ...
+  group_filter           = "(objectClass=posixGroup)"
+  group_member_attribute = "memberUid"
+}
+```
+
+A configured `group_member_attribute` is the one attribute read, as before. A
+value of it that is a DN (always, for `member` and `uniqueMember`) goes through
+the same mapping. Up to v0.13.0 a DN was reduced to the value of its first RDN,
+whoever's it was.
+
 ### An LDAP directory is reached over TLS
 
 Every password checked against an LDAP directory is a simple bind, and a simple
