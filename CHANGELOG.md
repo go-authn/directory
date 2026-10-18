@@ -3,7 +3,13 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
-## Unreleased
+## v0.14.1 — 2026-10-18
+
+- This file only: v0.14.0 shipped with its section still headed
+  "Unreleased". The tests for a forged member DN were also strengthened in
+  v0.14.0 (a group holding only forgeries), which this file did not say.
+
+## v0.14.0 — 2026-10-18
 
 ### ⛔ ldapdir's default user filter is wider
 
