@@ -89,6 +89,20 @@ type Config struct {
 	// member attribute is refused, since Members is how membership is read.
 	GroupAttributes []string
 
+	// ObjectClasses are the auxiliary object classes every person this
+	// source hands out is DECLARED to carry -- ["supannPerson", "eduPerson"]
+	// -- and GroupObjectClasses the same for every group. [New] refuses a name
+	// that is not an RFC 4512 descriptor (see
+	// [github.com/go-authn/directory.CheckObjectClassName]).
+	//
+	// ⛔ Declared, never read: an entry's own objectClass values are not
+	// copied, and objectClass cannot be named in Attributes. What the upstream
+	// directory files a person under is ITS schema; what this source's people
+	// are published as is the configuration's promise. See
+	// [github.com/go-authn/directory.ObjectClasses].
+	ObjectClasses      []string
+	GroupObjectClasses []string
+
 	GroupBaseDN    string // default: BaseDN
 	GroupFilter    string // default DefaultGroupFilter: posixGroup or groupOfNames
 	GroupAttribute string // default cn
@@ -153,7 +167,8 @@ const DefaultGroupFilter = "(|(objectClass=posixGroup)(objectClass=groupOfNames)
 
 // A Source reads an LDAP directory.
 type Source struct {
-	cfg Config
+	cfg                   Config
+	classes, groupClasses directory.ObjectClasses
 }
 
 // New connects once, to find out whether the directory is there at all.
@@ -189,8 +204,16 @@ func New(cfg Config) (*Source, error) {
 	if err := checkCopied(cfg); err != nil {
 		return nil, err
 	}
+	classes, err := directory.NewObjectClasses(cfg.ObjectClasses...)
+	if err != nil {
+		return nil, fmt.Errorf("ldapdir: ObjectClasses: %w", err)
+	}
+	groupClasses, err := directory.NewObjectClasses(cfg.GroupObjectClasses...)
+	if err != nil {
+		return nil, fmt.Errorf("ldapdir: GroupObjectClasses: %w", err)
+	}
 
-	s := &Source{cfg: cfg}
+	s := &Source{cfg: cfg, classes: classes, groupClasses: groupClasses}
 	c, err := s.dial()
 	if err != nil {
 		return nil, err
@@ -364,7 +387,8 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 		// The password is never read: the directory holds it and will not give
 		// it up, which is the point of a directory. What it will do is answer
 		// "is this it", one bind at a time.
-		opts = append(opts, directory.WithVerifier(s.bindAs(e.DN)))
+		opts = append(opts, directory.WithVerifier(s.bindAs(e.DN)),
+			directory.WithObjectClasses(s.classes))
 		out = append(out, directory.NewIdentity(name, opts...))
 	}
 	return out, nil
@@ -385,15 +409,40 @@ func (s *Source) attributes() []string {
 // entry -- from every entry, when the filter matches several, as Members
 // reads the members of all of them.
 func (s *Source) GroupAttributes(group string) (directory.Attributes, error) {
-	c, err := s.dial()
+	merged, err := s.group(group, s.cfg.GroupAttributes)
 	if err != nil {
 		return directory.Attributes{}, err
+	}
+	a, err := copied(merged, s.cfg.GroupAttributes)
+	if err != nil {
+		return directory.Attributes{}, fmt.Errorf("ldapdir: group %q: %w", group, err)
+	}
+	return a, nil
+}
+
+// GroupObjectClasses is the GroupObjectClasses configured, for a group the
+// directory has, and ErrNoSuchGroup for one it has not. The group's own
+// objectClass values are not asked for: the answer is the configuration's.
+func (s *Source) GroupObjectClasses(group string) (directory.ObjectClasses, error) {
+	if _, err := s.group(group, nil); err != nil {
+		return directory.ObjectClasses{}, err
+	}
+	return s.groupClasses, nil
+}
+
+// group searches for one group's entries -- every one, when the filter
+// matches several, as Members reads the members of all of them -- and puts
+// the attributes asked for in one entry.
+func (s *Source) group(group string, attrs []string) (*ldap.Entry, error) {
+	c, err := s.dial()
+	if err != nil {
+		return nil, err
 	}
 	defer c.Close()
 
 	// Asked for even with nothing to copy: the answer is then whether the
 	// group exists, and "1.1" is RFC 4511 §4.5.1.8's "no attributes".
-	want := append([]string(nil), s.cfg.GroupAttributes...)
+	want := append([]string(nil), attrs...)
 	if len(want) == 0 {
 		want = []string{"1.1"}
 	}
@@ -403,20 +452,16 @@ func (s *Source) GroupAttributes(group string) (directory.Attributes, error) {
 		filter, want, nil,
 	))
 	if err != nil {
-		return directory.Attributes{}, fmt.Errorf("ldapdir: searching for group %q: %w", group, err)
+		return nil, fmt.Errorf("ldapdir: searching for group %q: %w", group, err)
 	}
 	if len(res.Entries) == 0 {
-		return directory.Attributes{}, fmt.Errorf("%w: %q, under %s", directory.ErrNoSuchGroup, group, s.cfg.GroupBaseDN)
+		return nil, fmt.Errorf("%w: %q, under %s", directory.ErrNoSuchGroup, group, s.cfg.GroupBaseDN)
 	}
 	merged := &ldap.Entry{}
 	for _, e := range res.Entries {
 		merged.Attributes = append(merged.Attributes, e.Attributes...)
 	}
-	a, err := copied(merged, s.cfg.GroupAttributes)
-	if err != nil {
-		return directory.Attributes{}, fmt.Errorf("ldapdir: group %q: %w", group, err)
-	}
-	return a, nil
+	return merged, nil
 }
 
 // bindAs is the password check: a bind, on its OWN connection.

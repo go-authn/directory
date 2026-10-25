@@ -89,6 +89,53 @@ type Source struct {
 	name    string
 	verify  func(*sql.DB, string, string) error
 	columns int
+
+	// The classes as the options gave them, checked by New into the two
+	// below.
+	declared, groupDeclared []string
+	classes, groupClasses   directory.ObjectClasses
+
+	ownsDB bool
+}
+
+// WithObjectClasses declares the auxiliary object classes every person this
+// source hands out carries -- ["supannPerson", "eduPerson"] -- by name. Given
+// twice, the lists are joined. [New] refuses a name that is not an RFC 4512
+// descriptor (see [directory.CheckObjectClassName]).
+//
+// ⛔ Declared here, never read from the database: there is no column that
+// sets a class, and a column named objectClass in an attributes query is
+// refused like any other name the server derives. See
+// [directory.ObjectClasses] for why.
+func WithObjectClasses(names ...string) Option {
+	return func(s *Source) { s.declared = append(s.declared, names...) }
+}
+
+// WithGroupObjectClasses is the same for every group this source has.
+func WithGroupObjectClasses(names ...string) Option {
+	return func(s *Source) { s.groupDeclared = append(s.groupDeclared, names...) }
+}
+
+// ClosesDB hands the database to the source: [Source.Close] then closes it.
+// Without it Close does nothing, because the database is the caller's.
+//
+// ⛔ It exists so that a caller who opened the database only for this source
+// -- hcldir does -- need not WRAP the source to close it. A wrapper embedding
+// the [directory.Source] interface has that interface's methods only, and
+// silently drops every optional one: wrapping this source that way made it
+// stop being a [directory.GroupLister], and a server publishing it published
+// no groups at all. With [directory.GroupAttributer] and
+// [directory.GroupObjectClasser] beside it, a wrapper per combination would
+// have been eight types.
+func ClosesDB() Option { return func(s *Source) { s.ownsDB = true } }
+
+// Close closes the database when the source was given it with [ClosesDB],
+// and does nothing otherwise.
+func (s *Source) Close() error {
+	if !s.ownsDB {
+		return nil
+	}
+	return s.db.Close()
 }
 
 // Option changes how a source reads.
@@ -120,6 +167,13 @@ func New(db *sql.DB, q Queries, opts ...Option) (*Source, error) {
 	s := &Source{db: db, q: q, name: "a database"}
 	for _, o := range opts {
 		o(s)
+	}
+	var err error
+	if s.classes, err = directory.NewObjectClasses(s.declared...); err != nil {
+		return nil, fmt.Errorf("sqldir: the people's object classes: %w", err)
+	}
+	if s.groupClasses, err = directory.NewObjectClasses(s.groupDeclared...); err != nil {
+		return nil, fmt.Errorf("sqldir: the groups' object classes: %w", err)
 	}
 	return s, nil
 }
@@ -201,6 +255,7 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 		if a, ok := attrs[name]; ok {
 			opts = append(opts, directory.WithAttributes(a))
 		}
+		opts = append(opts, directory.WithObjectClasses(s.classes))
 		out = append(out, directory.NewIdentity(name, opts...))
 	}
 	return out, rows.Err()
@@ -381,4 +436,13 @@ func (s *Source) GroupAttributes(group string) (directory.Attributes, error) {
 		return directory.Attributes{}, err
 	}
 	return directory.Attributes{}, nil
+}
+
+// GroupObjectClasses is the classes declared for every group, for a group
+// this database has, and ErrNoSuchGroup for one it has not.
+func (s *Source) GroupObjectClasses(group string) (directory.ObjectClasses, error) {
+	if _, err := s.Members(group); err != nil {
+		return directory.ObjectClasses{}, err
+	}
+	return s.groupClasses, nil
 }

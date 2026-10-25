@@ -1,0 +1,2 @@
+go test fuzz v1
+string("Χ̴\xea\x8b\xf2\x8c00")

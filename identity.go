@@ -32,6 +32,10 @@ type Identity struct {
 	// attrs describe; they prove nothing, and are kept apart from the
 	// credentials above so that neither can be mistaken for the other.
 	attrs Attributes
+
+	// classes are the auxiliary object classes the configuration declared
+	// for this person: declared, never read from the data.
+	classes ObjectClasses
 }
 
 // A Credential is one way of proving somebody. They are named so that a server
@@ -151,6 +155,29 @@ func WithAttributes(a Attributes) Option {
 // credentials. They describe and prove nothing, and none of them is a secret:
 // see [CheckAttributeName].
 func (i *Identity) Attributes() Attributes { return i.attrs }
+
+// WithObjectClasses declares the auxiliary object classes this person is
+// published with, beside the ones a server derives itself. Given twice, the
+// second set is added after the first, without repeats.
+//
+// It takes an [ObjectClasses] for the reason [WithAttributes] takes an
+// Attributes: an Option cannot fail, and [NewObjectClasses] is where a name
+// that is not a descriptor is refused.
+func WithObjectClasses(c ObjectClasses) Option {
+	return func(i *Identity) {
+		for _, n := range c.list {
+			i.classes.add(n)
+		}
+	}
+}
+
+// ObjectClasses are the auxiliary object classes the configuration declared
+// for this person, in the order declared, without repeats (compared without
+// regard to case, the first spelling kept). The slice is a copy.
+//
+// They come from the configuration and from nothing else: see
+// [ObjectClasses]. A server checks them against the schema it serves.
+func (i *Identity) ObjectClasses() []string { return i.classes.Names() }
 
 // From records where this identity came from, for a server to print.
 func From(where string) Option {

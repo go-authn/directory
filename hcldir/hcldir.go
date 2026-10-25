@@ -12,6 +12,10 @@
 //	  # optional: by alias, the first column the name
 //	  users_attributes  = "select login, uid_number as \"uidNumber\", mail from staff"
 //	  groups_attributes = "select team, gid as \"gidNumber\" from teams"
+//
+//	  # optional: declared, never inferred from the columns above
+//	  object_classes       = ["supannPerson", "eduPerson"]
+//	  group_object_classes = ["supannGroupe"]
 //	}
 //
 //	users "ldap" {
@@ -31,9 +35,10 @@
 // # No decoding here
 //
 // The struct tags are inert strings: the CALLER decodes -- with gohcl, or by
-// hand -- and hands the block over. HCL is imported only to write, by
-// SetPassword, which edits the declaring file with hclwrite (since v0.10.0;
-// this comment said "no HCL library" until a README audit ran go list).
+// hand -- and hands the block over. HCL is imported to write, by SetPassword,
+// which edits the declaring file with hclwrite (since v0.10.0; this comment
+// said "no HCL library" until a README audit ran go list), and for the
+// hcl.Range fields gohcl fills in so that an error can name a line.
 //
 // # Secrets come from files
 //
@@ -53,6 +58,7 @@ import (
 	"strings"
 
 	"github.com/go-authn/directory"
+	"github.com/hashicorp/hcl/v2"
 )
 
 // A Block is one `users` block: a directory somewhere else, named.
@@ -111,6 +117,27 @@ type Block struct {
 	// other.
 	Attributes      []string `hcl:"attributes,optional"`
 	GroupAttributes []string `hcl:"group_attributes,optional"`
+
+	// ObjectClasses and GroupObjectClasses DECLARE the auxiliary object
+	// classes every person, and every group, this block hands out carries:
+	//
+	//	object_classes       = ["supannPerson", "eduPerson"]
+	//	group_object_classes = ["supannGroupe"]
+	//
+	// Both kinds take them. They are declared here, beside the queries and
+	// the attribute lists that produce what the classes promise, and are
+	// never inferred from those attributes nor read from the data: see
+	// [directory.ObjectClasses]. [Block.Check] refuses a name that is not an
+	// RFC 4512 descriptor; the server publishing the entries checks the rest
+	// against its schema.
+	ObjectClasses      []string `hcl:"object_classes,optional"`
+	GroupObjectClasses []string `hcl:"group_object_classes,optional"`
+
+	// ObjectClassesRange and GroupObjectClassesRange are where those were
+	// written, filled in by gohcl, for an error that points at the line. A
+	// block built by hand leaves them empty, and its errors say no place.
+	ObjectClassesRange      hcl.Range `hcl:"object_classes,attr_value_range"`
+	GroupObjectClassesRange hcl.Range `hcl:"group_object_classes,attr_value_range"`
 
 	// StartTLS upgrades a plaintext LDAP connection before binding. A
 	// directory reached over ldap:// without it sends the bind password in the
@@ -172,6 +199,15 @@ func (b Block) Check() error {
 		}
 	default:
 		return fmt.Errorf("there is no %q directory here: there are %s", b.Kind, strings.Join(Kinds, " and "))
+	}
+	// Checked here, without a network and in either build, by the rule
+	// sqldir.New and ldapdir.New apply again.
+	block := fmt.Sprintf("users %q", b.Kind)
+	if _, err := checkClasses(b.ObjectClassesRange, block, "object_classes", b.ObjectClasses); err != nil {
+		return err
+	}
+	if _, err := checkClasses(b.GroupObjectClassesRange, block, "group_object_classes", b.GroupObjectClasses); err != nil {
+		return err
 	}
 	return nil
 }
@@ -243,67 +279,23 @@ func named(fields map[string]string) string {
 	return strings.Join(written[:len(written)-1], ", ") + " and " + written[len(written)-1]
 }
 
-// closing gives back a source that closes something when the set closes.
-//
-// ⛔ A wrapper that embeds an INTERFACE has exactly that interface's methods,
-// and silently drops every optional one the concrete type had. Wrapping a
-// *sqldir.Source in a plain struct made it stop being a
-// [directory.GroupLister] -- so a server publishing this directory published
-// no groups at all, with nothing anywhere saying why. It was found by a
-// consumer's end-to-end test, which is the only place it CAN be found: every
-// type still satisfied every interface it was declared against.
-//
-// So the wrapper is chosen by what the source can do. One more capability
-// means one more case here, and a test that asks for it:
-// [directory.GroupAttributer] is why there are four.
-func closing(src directory.Source, close func() error) directory.Source {
-	c := closer{src, close}
-	lister, lists := src.(directory.GroupLister)
-	attr, describes := src.(directory.GroupAttributer)
-	switch {
-	case lists && describes:
-		return closingListerAttributer{closingLister{c, lister}, attr}
-	case lists:
-		return closingLister{c, lister}
-	case describes:
-		return closingAttributer{c, attr}
+// at is where a value was written, for the front of a message: the range
+// gohcl records with attr_value_range, or nothing for a block built by hand.
+func at(r hcl.Range) string {
+	if r.Filename == "" {
+		return ""
 	}
-	return c
+	return r.String() + ": "
 }
 
-type closer struct {
-	directory.Source
-	close func() error
-}
-
-func (c closer) Close() error { return c.close() }
-
-// closingLister is a closer that can still list its groups.
-type closingLister struct {
-	closer
-	lister directory.GroupLister
-}
-
-func (c closingLister) GroupNames() ([]string, error) { return c.lister.GroupNames() }
-
-// closingAttributer is a closer that can still describe its groups.
-type closingAttributer struct {
-	closer
-	attr directory.GroupAttributer
-}
-
-func (c closingAttributer) GroupAttributes(g string) (directory.Attributes, error) {
-	return c.attr.GroupAttributes(g)
-}
-
-// closingListerAttributer can do both.
-type closingListerAttributer struct {
-	closingLister
-	attr directory.GroupAttributer
-}
-
-func (c closingListerAttributer) GroupAttributes(g string) (directory.Attributes, error) {
-	return c.attr.GroupAttributes(g)
+// checkClasses refuses a declared object class that is not an RFC 4512
+// descriptor, saying where it was written.
+func checkClasses(r hcl.Range, block, field string, names []string) (directory.ObjectClasses, error) {
+	c, err := directory.NewObjectClasses(names...)
+	if err != nil {
+		return directory.ObjectClasses{}, fmt.Errorf("%s%s %s: %w", at(r), block, field, err)
+	}
+	return c, nil
 }
 
 // cleartextLDAP refuses a plaintext ldap:// to another machine.

@@ -116,6 +116,45 @@ may be the one whose `gidNumber` should have won.
 A person's attributes come with the person, from the source that owns the
 name — a `Set` does not assemble somebody out of two sources.
 
+## Object classes: declared, never inferred
+
+A site that publishes its own schema — SUPANN, eduPerson, SCHAC — needs its
+entries to carry the **auxiliary object classes** that allow those attributes.
+A source's configuration **declares** them:
+
+```go
+c, err := directory.NewObjectClasses("supannPerson", "eduPerson")
+id := directory.NewIdentity("alice", directory.WithAttributes(a), directory.WithObjectClasses(c))
+id.ObjectClasses()   // [supannPerson eduPerson]: declared order, no repeats (case-insensitive), a copy
+```
+
+- **Explicit, on purpose.** A class is a promise about the shape of *every*
+  entry (RFC 4512 §4.1.1: it lists what an entry MUST and MAY hold). So it is
+  **never inferred** from the attributes somebody happens to have — a column
+  added to a database, or a value filled in for one person, must not change
+  what everybody is published as — and **never read from the data**: no
+  column, and no upstream `objectClass` value, sets one. `objectClass` stays
+  refused as an attribute name, so a query or a copy list cannot smuggle one
+  in either.
+- **The syntax is checked here, the meaning by the server.** A name must be an
+  RFC 4512 `descr` (§1.4: a letter, then letters, digits and hyphens);
+  `CheckObjectClassName` refuses anything else — spaces, quotes, parentheses —
+  because the names reach an LDAP server's output. Numeric OIDs are refused,
+  as for attributes: a server's checks are by name. Whether a class exists, is
+  AUXILIARY and is not one the server derives itself (account, inetOrgPerson,
+  posixAccount, …) is a question about a schema, and
+  [go-authn/authnd](https://github.com/go-authn/authnd) checks it against the
+  schema it serves.
+- **Groups**: the optional `GroupObjectClasser`
+  (`GroupObjectClasses(group) (ObjectClasses, error)`), beside
+  `GroupAttributer`. `Set.GroupObjectClasses` takes the list of the **first
+  source that has the group and declares any**, whole. A source that declares
+  nothing does not decide, so a local file overriding a `gidNumber` does not
+  strip the directory block's classes. When two sources declare different
+  lists, the first wins and the other is ignored — not merged, since a union
+  would publish a class whose MUST attributes only the losing configuration
+  promised, and not an error, as with a person two sources know.
+
 ## The sources
 
 | package | reads | dependencies |
@@ -123,7 +162,7 @@ name — a `Set` does not assemble somebody out of two sources.
 | `directory` | a `Static` list you build | **none** |
 | `directory/sqldir` | any `*sql.DB`, with **your** queries | none — the driver is yours to pick |
 | `directory/ldapdir` | an LDAP server | `go-ldap/ldap/v3` |
-| `directory/hcldir` | a `users` block naming a database or an LDAP server, **and** `user`/`group` blocks holding the people themselves | `golang.org/x/crypto/ssh`, to parse an authorized_keys line; `hashicorp/hcl/v2` and `zclconf/go-cty`, to rewrite a file in place (`SetPassword`) |
+| `directory/hcldir` | a `users` block naming a database or an LDAP server, **and** `user`/`group` blocks holding the people themselves | `golang.org/x/crypto/ssh`, to parse an authorized_keys line; `hashicorp/hcl/v2` and `zclconf/go-cty`, to rewrite a file in place (`SetPassword`) and to say where a refused value was written |
 | `directory/ldaptest` | *(an LDAP directory to test against)* | `glauth/ldap` |
 
 A one-time-code secret is a credential like the others — `Can(TOTPSecret)`,
@@ -157,6 +196,10 @@ users "sql" {
   # optional, read by column ALIAS: the first column is the name
   users_attributes  = "select login, uid_number as \"uidNumber\", home as \"homeDirectory\", m.address as mail from staff left join mails m using (login)"
   groups_attributes = "select team, gid as \"gidNumber\" from teams"
+
+  # optional, in either kind of block: declared, never inferred from the columns
+  object_classes       = ["supannPerson", "eduPerson"]   # on every person this block hands out
+  group_object_classes = ["supannGroupe"]                # on every group
 }
 
 users "ldap" {
@@ -176,13 +219,24 @@ user "alice" {
     mail          = ["alice@example.org", "a.liddell@example.org"]
     "description;lang-fr" = "une personne"
   }
+  object_classes = ["eduPerson"]
 }
 
 group "staff" {
-  members    = ["alice", "bob"]
-  attributes = { gidNumber = "100", description = "the people who work here" }   # a posixGroup needs a gidNumber
+  members        = ["alice", "bob"]
+  attributes     = { gidNumber = "100", description = "the people who work here" }   # a posixGroup needs a gidNumber
+  object_classes = ["supannGroupe"]
 }
 ```
+
+**`object_classes`** (and `group_object_classes` in a `users` block) are
+checked by `Block.Check` and `File` before anything connects, and a refusal
+points at where it was written when gohcl decoded the block:
+`authnd.hcl:4,20-48: users "ldap" object_classes: directory: not an object
+class name: "edu(Person)" is not a descriptor …`. `sqldir.WithObjectClasses`,
+`sqldir.WithGroupObjectClasses` and `ldapdir.Config.ObjectClasses` /
+`GroupObjectClasses` are the same declaration for a program that builds its
+sources by hand.
 
 **The SQL attributes queries** (`sqldir.Queries.PeopleAttributes` and
 `GroupAttributes`) are optional, and the positional `users` and `groups`
