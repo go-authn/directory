@@ -1,0 +1,2 @@
+go test fuzz v1
+string("\ue573斋\ued32젲굢髠\ue4fe쿠\U000f55f9")

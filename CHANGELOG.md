@@ -3,6 +3,44 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
+## v0.15.0 — 2026-10-25
+
+### Object classes, declared explicitly
+
+A source's configuration can now declare the auxiliary object classes its
+people and groups carry, so that a server such as go-authn/authnd can publish
+a site schema (SUPANN, eduPerson):
+
+- `directory.ObjectClasses`, `NewObjectClasses`, `CheckObjectClassName`,
+  `ErrObjectClassName`; `WithObjectClasses` and `Identity.ObjectClasses()`.
+- `GroupObjectClasser` (optional, beside `GroupAttributer`),
+  `Set.GroupObjectClasses`, `Static.GroupClasses`.
+- hcldir: `object_classes` and `group_object_classes` in `users` blocks of
+  both kinds, `object_classes` in `user` and `group` blocks. Errors carry the
+  HCL position (`*Range` fields filled by gohcl's `attr_value_range`).
+- sqldir: `WithObjectClasses`, `WithGroupObjectClasses`; ldapdir:
+  `Config.ObjectClasses`, `Config.GroupObjectClasses`.
+
+**Why explicit.** A class promises the shape of every entry (RFC 4512
+§4.1.1). It is never inferred from the attributes present and never read from
+the data -- no database column, no upstream `objectClass` value -- so an
+attribute appearing in a database cannot change a published class. This
+package checks the spelling only (an RFC 4512 `descr`; numeric OIDs, spaces,
+quotes and parentheses refused, fuzzed); authnd validates the classes against
+the schema it serves (auxiliary only, not one it derives, not unknown).
+
+**Groups across sources.** The first source that has the group and declares
+classes decides, whole; a source declaring nothing does not decide; a later
+source's different list is ignored, neither merged nor an error.
+
+### sqldir.Source can close its database
+
+`sqldir.ClosesDB()` hands the database to the source, and
+`(*sqldir.Source).Close` closes it (and does nothing without the option).
+`hcldir.Open` now returns the `*sqldir.Source` itself instead of a wrapper per
+combination of optional interfaces, which would have needed eight types once
+`GroupObjectClasser` joined `GroupLister` and `GroupAttributer`.
+
 ## v0.14.1 — 2026-10-18
 
 - This file only: v0.14.0 shipped with its section still headed

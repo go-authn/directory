@@ -103,7 +103,7 @@ type Config struct {
 	ObjectClasses      []string
 	GroupObjectClasses []string
 
-	GroupBaseDN   string // default: BaseDN
+	GroupBaseDN    string // default: BaseDN
 	GroupFilter    string // default DefaultGroupFilter: posixGroup or groupOfNames
 	GroupAttribute string // default cn
 
