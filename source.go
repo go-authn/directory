@@ -58,6 +58,22 @@ type GroupAttributer interface {
 	GroupAttributes(group string) (Attributes, error)
 }
 
+// A GroupObjectClasser is a source that can say which auxiliary object classes
+// its configuration declares for a group: [ObjectClasses].
+//
+// It sits beside [GroupAttributer] rather than inside it, for the reason
+// GroupAttributer sits beside Members: it is optional, so a source that
+// implements nothing new keeps compiling, and GroupAttributes keeps its
+// signature for every program that already calls or implements it.
+//
+// It answers like Members: [ErrNoSuchGroup] for a group the source does not
+// have, and an empty ObjectClasses, with no error, for one it has and
+// declares nothing for. The answer comes from the configuration, never from
+// the group's data.
+type GroupObjectClasser interface {
+	GroupObjectClasses(group string) (ObjectClasses, error)
+}
+
 // ErrNoSuchGroup is what a source returns for a name it does not have.
 var ErrNoSuchGroup = errors.New("directory: no such group")
 
@@ -205,6 +221,52 @@ func (s *Set) GroupAttributes(group string) (Attributes, error) {
 	return out, nil
 }
 
+// GroupObjectClasses asks the sources, in order, which object classes are
+// declared for one group, and the FIRST source that has the group and
+// declares any decides: its list is the answer, whole.
+//
+// A source that has the group and declares nothing -- or cannot declare (no
+// [GroupObjectClasser]: it is asked Members, to learn whether it has the
+// group) -- does not decide, so a local file that only overrides a gidNumber
+// does not strip the classes the directory's block declares.
+//
+// ⛔ Two sources declaring different classes for one group are not merged:
+// the first one's list wins and the later one is ignored, as [Set.Identities]
+// ignores a person a later source also knows. A union would publish a class
+// whose MUST attributes (RFC 4512 §4.1.1) only the losing source's
+// configuration promised. It is not an error either: adding a block to the
+// directory must not stop a server that declares the group locally.
+//
+// A broken source met before the deciding one is an error, as in
+// [Set.GroupAttributes]: it may be the source that should have decided.
+// Sources after the deciding one are not asked.
+func (s *Set) GroupObjectClasses(group string) (ObjectClasses, error) {
+	var found bool
+	for _, src := range s.sources {
+		var got ObjectClasses
+		var err error
+		if gc, ok := src.(GroupObjectClasser); ok {
+			got, err = gc.GroupObjectClasses(group)
+		} else {
+			_, err = src.Members(group)
+		}
+		if err != nil {
+			if errors.Is(err, ErrNoSuchGroup) {
+				continue
+			}
+			return ObjectClasses{}, fmt.Errorf("%s: %w", src.Describe(), err)
+		}
+		found = true
+		if got.Len() > 0 {
+			return got, nil
+		}
+	}
+	if !found {
+		return ObjectClasses{}, fmt.Errorf("%w: %q, in %s", ErrNoSuchGroup, group, s.Describe())
+	}
+	return ObjectClasses{}, nil
+}
+
 // GroupNames is every group the sources can name, sorted and without repeats.
 //
 // Sources that cannot list groups are skipped rather than refused, so this can
@@ -301,6 +363,12 @@ type Static struct {
 	// source's because it is in Groups: an entry here for a group that is not
 	// there describes nothing, and is answered as no such group.
 	GroupAttrs map[string]Attributes
+
+	// GroupClasses are the object classes declared for the groups in Groups,
+	// by the same rule as GroupAttrs: an entry for a group that is not in
+	// Groups declares nothing. A person's classes ride on the person: see
+	// [WithObjectClasses].
+	GroupClasses map[string]ObjectClasses
 }
 
 // GroupAttributes is what this list says about a group.
@@ -309,6 +377,14 @@ func (s *Static) GroupAttributes(group string) (Attributes, error) {
 		return Attributes{}, fmt.Errorf("%w: %q", ErrNoSuchGroup, group)
 	}
 	return s.GroupAttrs[group], nil
+}
+
+// GroupObjectClasses is the object classes this list declares for a group.
+func (s *Static) GroupObjectClasses(group string) (ObjectClasses, error) {
+	if _, ok := s.Groups[group]; !ok {
+		return ObjectClasses{}, fmt.Errorf("%w: %q", ErrNoSuchGroup, group)
+	}
+	return s.GroupClasses[group], nil
 }
 
 func (s *Static) Describe() string {

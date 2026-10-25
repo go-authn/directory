@@ -48,19 +48,30 @@ func openSQL(b Block) (directory.Source, error) {
 		db.Close()
 		return nil, fmt.Errorf("the %s database is not answering: %w", b.Driver, err)
 	}
+	// The database is the CALLER's to close: sqldir takes a *sql.DB precisely
+	// so that the driver and the lifetime belong to whoever opened it, and
+	// this caller opened it for the source alone, so the source is handed it
+	// (ClosesDB). Windows found this one -- a test could not remove its own
+	// SQLite file, because the handle was still open -- and every Unix hid it,
+	// since unlinking a file somebody still holds is allowed there.
+	//
+	// ⛔ Up to v0.14.1 this wrapped the source instead, with one wrapper type
+	// per combination of optional interfaces: a wrapper embedding
+	// directory.Source drops every optional method, and that had once made
+	// this directory publish no groups. GroupObjectClasser would have made it
+	// eight types; the source returned now is the *sqldir.Source itself, with
+	// every method it has.
 	src, err := sqldir.New(db, sqldir.Queries{People: b.UsersQuery, Groups: b.GroupsQuery,
 		PeopleAttributes: b.UsersAttributesQuery, GroupAttributes: b.GroupsAttributesQuery},
-		sqldir.Named("a "+b.Driver+" database"))
+		sqldir.Named("a "+b.Driver+" database"),
+		sqldir.WithObjectClasses(b.ObjectClasses...),
+		sqldir.WithGroupObjectClasses(b.GroupObjectClasses...),
+		sqldir.ClosesDB())
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	// The database is the CALLER's to close: sqldir takes a *sql.DB precisely
-	// so that the driver and the lifetime belong to whoever opened it. Windows
-	// found this one -- a test could not remove its own SQLite file, because
-	// the handle was still open -- and every Unix hid it, since unlinking a
-	// file somebody still holds is allowed there.
-	return closing(src, db.Close), nil
+	return src, nil
 }
 
 // driverFor maps the name a person writes -- the database's, not the Go

@@ -18,6 +18,7 @@ func openLDAP(b Block) (directory.Source, error) {
 		GroupAttribute: b.GroupAttribute, MemberAttribute: b.MemberAttribute,
 		TOTPAttribute: b.TOTPAttribute,
 		Attributes:    b.Attributes, GroupAttributes: b.GroupAttributes,
+		ObjectClasses: b.ObjectClasses, GroupObjectClasses: b.GroupObjectClasses,
 		StartTLS: b.StartTLS,
 	}
 	if b.BindPasswordFile != "" {

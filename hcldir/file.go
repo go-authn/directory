@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/go-authn/directory"
+	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
 	"golang.org/x/crypto/ssh"
 )
@@ -61,6 +62,14 @@ type UserBlock struct {
 	// [directory.CheckAttributeName]): the password, the NT hash, the keys and
 	// the one-time-code secret have their fields above.
 	Attributes cty.Value `hcl:"attributes,optional"`
+
+	// ObjectClasses DECLARE the auxiliary object classes this person is
+	// published with -- object_classes = ["eduPerson"] -- and are never
+	// inferred from the attributes above: see [directory.ObjectClasses]. A
+	// name that is not an RFC 4512 descriptor is refused, at the position
+	// ObjectClassesRange records (gohcl fills it in).
+	ObjectClasses      []string  `hcl:"object_classes,optional"`
+	ObjectClassesRange hcl.Range `hcl:"object_classes,attr_value_range"`
 }
 
 // A GroupBlock names people, and is published as a posixGroup.
@@ -74,10 +83,16 @@ type UserBlock struct {
 //
 // This package does not insist on it -- it does not know what the group will
 // be published as -- and a server that publishes posixGroups does.
+//
+// Its object_classes declare what else the group is published as, by the
+// rules of [UserBlock.ObjectClasses].
 type GroupBlock struct {
 	Name       string    `hcl:"name,label"`
 	Members    []string  `hcl:"members"`
 	Attributes cty.Value `hcl:"attributes,optional"`
+
+	ObjectClasses      []string  `hcl:"object_classes,optional"`
+	ObjectClassesRange hcl.Range `hcl:"object_classes,attr_value_range"`
 }
 
 // File is the third source, beside a database and an LDAP server: the people
@@ -89,7 +104,8 @@ type GroupBlock struct {
 // configuration that answers it silently is one a reader cannot check.
 func File(users []UserBlock, groups []GroupBlock) (directory.Source, error) {
 	const where = "the configuration file"
-	src := &directory.Static{Name: where, Groups: map[string][]string{}, GroupAttrs: map[string]directory.Attributes{}}
+	src := &directory.Static{Name: where, Groups: map[string][]string{},
+		GroupAttrs: map[string]directory.Attributes{}, GroupClasses: map[string]directory.ObjectClasses{}}
 	for _, g := range groups {
 		src.Groups[g.Name] = g.Members
 		a, err := attributesOf(g.Attributes)
@@ -97,6 +113,11 @@ func File(users []UserBlock, groups []GroupBlock) (directory.Source, error) {
 			return nil, fmt.Errorf("group %q: %w", g.Name, err)
 		}
 		src.GroupAttrs[g.Name] = a
+		c, err := checkClasses(g.ObjectClassesRange, fmt.Sprintf("group %q", g.Name), "object_classes", g.ObjectClasses)
+		if err != nil {
+			return nil, err
+		}
+		src.GroupClasses[g.Name] = c
 	}
 	seen := map[string]bool{}
 	for _, u := range users {
@@ -141,7 +162,11 @@ func File(users []UserBlock, groups []GroupBlock) (directory.Source, error) {
 		if err != nil {
 			return nil, fmt.Errorf("user %q: %w", u.Name, err)
 		}
-		opts = append(opts, directory.WithAttributes(attrs))
+		classes, err := checkClasses(u.ObjectClassesRange, fmt.Sprintf("user %q", u.Name), "object_classes", u.ObjectClasses)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, directory.WithAttributes(attrs), directory.WithObjectClasses(classes))
 		src.People = append(src.People, directory.NewIdentity(u.Name, opts...))
 	}
 	return src, nil
