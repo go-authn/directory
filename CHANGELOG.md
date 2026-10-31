@@ -3,6 +3,15 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
+## v0.16.1 — 2026-10-31
+
+The module's `go` directive is `1.27.3` (was `1.27.1`): a program built with the
+floor's own toolchain carried three standard-library vulnerabilities
+(GO-2026-6809 in crypto/x509, GO-2026-6617 and GO-2026-6613 in net/http), fixed
+in 1.27.2 and 1.27.3. CI takes its toolchain from go.mod (`go-version-file`,
+where five jobs each named `1.27.2`) and runs `govulncheck ./...`, which fails
+the build on any finding. Nothing else changes.
+
 ## v0.16.0 — 2026-10-31
 
 ### Reading every group once
