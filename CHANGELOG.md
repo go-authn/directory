@@ -3,6 +3,35 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
+## v0.16.0 — 2026-10-31
+
+### Reading every group once
+
+A server that publishes every group asks each one three questions (`Members`,
+`GroupAttributes`, `GroupObjectClasses`). For a database, each answer ran the
+groups query again and filtered it in Go, so reading n groups of m membership
+rows cost 3n scans of m: 1.9 s of one core and 40 million allocations for 200
+groups of 50, and a hundred times that for ten times the groups and ten times
+the rows. For a directory, each answer dialled and searched, and
+`Members` searched for the people again when a member was a DN.
+
+- `directory.GroupReader`, an optional interface: `ReadGroups()` returns every
+  group's members, attributes and classes (`directory.GroupData`) from one pass
+  over each query. `sqldir.Source` and `ldapdir.Source` implement it.
+- `(*Set).Frozen()` reads every `GroupReader` source once and returns a Set
+  that answers `Members`, `GroupAttributes`, `GroupObjectClasses` and
+  `GroupNames` from what was read, with the Set's own merging and precedence
+  (it is the same code asking sources that answer from memory). A source that
+  cannot be read is an error from `Frozen`. Close the original Set, not the
+  frozen one.
+- Differential tests hold the bulk answers to the per-group answers (values,
+  order, and the kind of error) on fixtures and on 80 random SQLite databases,
+  and a planted fault (a bulk read that drops the last member) is caught.
+- `ldapdir`: a group is matched as the directory matches it (caseIgnoreMatch
+  for `cn`); a member DN is mapped to a person once for each distinct value,
+  but still by comparing it with every imported person, so a site with very
+  many DN members and very many people still pays for that comparison.
+
 ## v0.15.0 — 2026-10-25
 
 ### Object classes, declared explicitly

@@ -371,6 +371,39 @@ func (s *Source) noGroups() bool {
 	return strings.TrimSpace(s.q.Groups) == "" && strings.TrimSpace(s.q.GroupAttributes) == ""
 }
 
+// ReadGroups is every group, as Members, GroupAttributes and
+// GroupObjectClasses answer for each, from one run of the groups query and one
+// of the group-attributes query: [directory.GroupReader].
+//
+// Asking those three for each group runs both queries again every time, so
+// reading n groups of m membership rows costs 3n scans of m.
+func (s *Source) ReadGroups() (map[string]directory.GroupData, error) {
+	out := map[string]directory.GroupData{}
+	if s.noGroups() {
+		return out, nil
+	}
+	members, _, err := s.memberships()
+	if err != nil {
+		return nil, err
+	}
+	attrs, err := s.attributes(s.q.GroupAttributes, "groups' attributes")
+	if err != nil {
+		return nil, err
+	}
+	for g, m := range members {
+		out[g] = directory.GroupData{Members: m, Attributes: attrs[g], Classes: s.groupClasses}
+	}
+	for g, a := range attrs {
+		if _, ok := members[g]; !ok {
+			// Described and nobody in it: a group, and an empty one.
+			out[g] = directory.GroupData{Members: []string{}, Attributes: a, Classes: s.groupClasses}
+		}
+	}
+	return out, nil
+}
+
+var _ directory.GroupReader = (*Source)(nil)
+
 // GroupNames is every group the groups query names, and every group the
 // group-attributes query describes, sorted and without repeats.
 func (s *Source) GroupNames() ([]string, error) {

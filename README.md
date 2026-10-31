@@ -414,6 +414,13 @@ that *can* list (the optional `GroupLister`) and skips the rest: a server
 publishing a list of groups can honestly publish fewer than `Members` would
 answer for, and a server checking membership keeps asking `Members`.
 
+A server that publishes **every** group asks each one three questions, and for
+a database or a directory each answer would read the whole thing again.
+`Set.Frozen()` reads each source that implements `GroupReader` (`sqldir` and
+`ldapdir` do) once, in bulk, and returns a Set that answers from memory with
+the same merging, precedence and errors; tests hold the two paths to the same
+answers. Close the original Set, not the frozen one.
+
 A group with **nobody in it** is refused by `Expand` rather than expanded to
 nothing, with `ErrEmptyGroup`: a configuration that grants nothing to nobody
 reads exactly like one that works. `Members` itself answers such a group with an
