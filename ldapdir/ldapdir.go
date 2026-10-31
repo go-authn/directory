@@ -595,6 +595,112 @@ func (s *Source) Members(group string) ([]string, error) {
 	return members, nil
 }
 
+// ReadGroups is every group, as Members, GroupAttributes and
+// GroupObjectClasses answer for each, from ONE search for the groups and, when
+// a member is a DN, one search for the people: [directory.GroupReader].
+//
+// Asking those three for each group dials and searches three times for it, and
+// Members searches for the people again whenever a member is a DN.
+//
+// A group is matched as the directory matches it: by the equality rule of the
+// group attribute, which for cn is caseIgnoreMatch, so two entries whose names
+// differ only by case are one group for every spelling, as they are when asked
+// for by name. A DN member is mapped to a person once for each distinct value.
+func (s *Source) ReadGroups() (map[string]directory.GroupData, error) {
+	c, err := s.dial()
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+
+	want := []string{s.cfg.GroupAttribute}
+	for _, a := range append(s.memberAttributes(), s.cfg.GroupAttributes...) {
+		if !slices.ContainsFunc(want, func(w string) bool { return strings.EqualFold(w, a) }) {
+			want = append(want, a)
+		}
+	}
+	res, err := c.Search(ldap.NewSearchRequest(
+		s.cfg.GroupBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+		s.cfg.GroupFilter, want, nil,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("ldapdir: reading the groups under %s: %w", s.cfg.GroupBaseDN, err)
+	}
+
+	// The entries of each group, by name folded as caseIgnoreMatch folds it, in
+	// the order the directory returned them; and every spelling of each name.
+	entries := map[string][]*ldap.Entry{}
+	spellings := map[string][]string{}
+	for _, e := range res.Entries {
+		seen := map[string]bool{}
+		for _, name := range e.GetAttributeValues(s.cfg.GroupAttribute) {
+			k := strings.ToLower(name)
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			entries[k] = append(entries[k], e)
+		}
+		for _, name := range e.GetAttributeValues(s.cfg.GroupAttribute) {
+			if !slices.Contains(spellings[strings.ToLower(name)], name) {
+				spellings[strings.ToLower(name)] = append(spellings[strings.ToLower(name)], name)
+			}
+		}
+	}
+
+	var people []person // read once, when the first DN needs it
+	type mapped struct {
+		name string
+		ok   bool
+	}
+	whom := map[string]mapped{}
+	out := map[string]directory.GroupData{}
+	for k, names := range spellings {
+		var members []string
+		var merged ldap.Entry
+		have := map[string]bool{}
+		for _, e := range entries[k] {
+			merged.Attributes = append(merged.Attributes, e.Attributes...)
+			for _, a := range s.memberAttributes() {
+				for _, v := range e.GetAttributeValues(a) {
+					name := v
+					if dn, isDN := s.memberDN(a, v); isDN {
+						key := a + "\x00" + v
+						m, done := whom[key]
+						if !done {
+							if people == nil {
+								if people, err = s.imported(c); err != nil {
+									return nil, err
+								}
+							}
+							m.name, m.ok = whoIs(people, dn)
+							whom[key] = m
+						}
+						if !m.ok {
+							continue
+						}
+						name = m.name
+					}
+					if !have[name] {
+						have[name] = true
+						members = append(members, name)
+					}
+				}
+			}
+		}
+		attrs, err := copied(&merged, s.cfg.GroupAttributes)
+		if err != nil {
+			return nil, fmt.Errorf("ldapdir: group %q: %w", names[0], err)
+		}
+		for _, n := range names {
+			out[n] = directory.GroupData{Members: members, Attributes: attrs, Classes: s.groupClasses}
+		}
+	}
+	return out, nil
+}
+
+var _ directory.GroupReader = (*Source)(nil)
+
 // memberAttributes is what a group's members are read from.
 func (s *Source) memberAttributes() []string {
 	if s.cfg.MemberAttribute != "" {
