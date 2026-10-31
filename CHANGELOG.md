@@ -10,8 +10,9 @@ are described in their pull requests and release notes.
 A server that publishes every group asks each one three questions (`Members`,
 `GroupAttributes`, `GroupObjectClasses`). For a database, each answer ran the
 groups query again and filtered it in Go, so reading n groups of m membership
-rows cost 3n scans of m: 2 s of one core for 200 groups of 50, and about 200 s
-for 2,000 groups of 50. For a directory, each answer dialled and searched, and
+rows cost 3n scans of m: 1.9 s of one core and 40 million allocations for 200
+groups of 50, and a hundred times that for ten times the groups and ten times
+the rows. For a directory, each answer dialled and searched, and
 `Members` searched for the people again when a member was a DN.
 
 - `directory.GroupReader`, an optional interface: `ReadGroups()` returns every
