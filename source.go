@@ -140,6 +140,7 @@ func (s *Set) Identities() ([]*Identity, error) {
 // first source's half would silently exclude the rest.
 func (s *Set) Members(group string) ([]string, error) {
 	var members []string
+	var seen map[string]struct{}
 	var missing int
 	var firstErr error
 	for _, src := range s.sources {
@@ -157,10 +158,30 @@ func (s *Set) Members(group string) ([]string, error) {
 			}
 			continue
 		}
+		if members == nil && len(got) > 0 {
+			members = make([]string, 0, len(got)) // the usual case is one source
+		}
 		for _, m := range got {
-			if !slices.Contains(members, m) {
-				members = append(members, m)
+			// A set once the list is long: a group of thousands made this
+			// quadratic. The order kept is the order of first appearance.
+			if seen != nil {
+				if _, dup := seen[m]; dup {
+					continue
+				}
+				seen[m] = struct{}{}
+			} else {
+				if slices.Contains(members, m) {
+					continue
+				}
+				if len(members) >= 64 {
+					seen = make(map[string]struct{}, 2*len(members))
+					for _, x := range members {
+						seen[x] = struct{}{}
+					}
+					seen[m] = struct{}{}
+				}
 			}
+			members = append(members, m)
 		}
 	}
 	switch {

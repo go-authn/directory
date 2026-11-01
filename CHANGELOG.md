@@ -3,6 +3,39 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
+## v0.17.0 — 2026-11-01
+
+### An outage is not a wrong password
+
+- `directory.ErrUnavailable`, with `AsUnavailable(err)` and
+  `TransportFailure(err)`. `ldapdir` returns it (wrapping the cause, message
+  unchanged) when the directory could not be asked: RFC 4511 busy (51),
+  unavailable (52), other (80), timeLimitExceeded (3), go-ldap's client-side
+  server-down, timeout, connect-error and network-error codes, and any failure
+  that is not a server's answer. It applies to the password check, to
+  `ldapdir.New`, `Identities`, `Members`, `ReadGroups`, `GroupNames`,
+  `GroupAttributes` and `GroupObjectClasses`. A server in front, such as
+  authnd, answers `unavailable` (52) for it instead of `invalidCredentials`,
+  and does not count a failed guess. `invalidCredentials` (49) is still only
+  `ErrWrongPassword`; the two are never both true.
+- `ldaptest.Server.FailBindsWith(code)`.
+
+### Mapping a member DN is one lookup
+
+`ldapdir` compared each distinct member DN with every imported person. It now
+builds an index of the people once per read, keyed by a canonical form of the
+DN that is equal exactly when `ldap.DN.EqualFold` is (distinguishedNameMatch,
+RFC 4517 §4.2.15), so a lookup is a map access with no allocation; the first
+person returned under a DN still wins. A member value is parsed once per
+distinct value, not once per occurrence. `Set.Members` and `Source.Members` no
+longer search a list for each member of a long group.
+
+On 10,000 people and 2,000 groups of 50 read through `Frozen` against a test
+directory, `ReadGroups` itself allocated 50.6 MB in 2.20 M objects and now
+allocates 13.1 MB in 0.38 M (the whole refresh, which also counts the wire
+library on both sides of the connection: 9.72 M allocations, 537 MB, now 7.17 M,
+481 MB). `NewAttributes` sizes its slices once.
+
 ## v0.16.1 — 2026-10-31
 
 The module's `go` directive is `1.27.3` (was `1.27.1`): a program built with the

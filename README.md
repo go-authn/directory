@@ -430,6 +430,37 @@ and a source that is *broken* is distinguished from one that simply lacks the
 group, because that is the difference between a wrong configuration and a
 database that is down.
 
+## A source that is down is not a wrong password
+
+`directory.ErrUnavailable` says a source could not be **asked**: the server is
+down, busy or shutting down, the connection dropped, a deadline passed. It is
+the opposite of an answer, and `directory.ErrWrongPassword` is an answer, so a
+server must not count the first as a failed guess:
+
+```go
+switch err := id.Verify(password); {
+case err == nil:                                    // let in
+case errors.Is(err, directory.ErrWrongPassword):    // a failed guess: count it
+case errors.Is(err, directory.ErrUnavailable):      // try again later: LDAP unavailable (52)
+default:                                            // another failure
+}
+```
+
+`ldapdir` marks, on `Verify` and on every read, what RFC 4511 §4.1.9 and
+appendix A.2 call `busy` (51), `unavailable` (52), `other` (80) and
+`timeLimitExceeded` (3), the client-side server-down, timeout, connect-error and
+network-error codes of go-ldap, and any failure that is not a server's answer at
+all (a refused or dropped connection, a TLS handshake that fails). The cause
+stays reachable with `errors.Is` and `errors.As`, and the message does not change.
+`invalidCredentials` (49) is only ever `ErrWrongPassword`; `unwillingToPerform`
+(53) and `inappropriateAuthentication` (48) are neither, because they are
+answers. A refused service account (`BindDN`) is a configuration error, not an
+outage. `sqldir` has no bind check of its own: the `Verify` function you give it
+may return `directory.AsUnavailable(err)` for a database it cannot reach, and
+`directory.TransportFailure(err)` says whether an error is the connection
+failing. `ldaptest.Server.FailBindsWith(code)` makes a test directory answer
+every bind with a given result code.
+
 ## Several sources, in order
 
 The first source that knows a name owns it. A site with its people in LDAP and

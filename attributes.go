@@ -58,6 +58,10 @@ type Attribute struct {
 //     at least one value, and nearly every syntax refuses an empty string.
 func NewAttributes(attrs ...Attribute) (Attributes, error) {
 	var a Attributes
+	if len(attrs) > 0 { // sized once; a refresh builds one of these per person and group
+		a.list = make([]Attribute, 0, len(attrs))
+		a.index = make(map[string]int, len(attrs))
+	}
 	for _, at := range attrs {
 		if err := CheckAttributeName(at.Name); err != nil {
 			return Attributes{}, err
@@ -85,7 +89,13 @@ func (a *Attributes) add(name string, values []string) {
 	if !ok {
 		i = len(a.list)
 		a.index[key] = i
-		a.list = append(a.list, Attribute{Name: name})
+		// Sized for what is about to be added: growing one value at a time
+		// copies the slice at 1, 2, 4, ...
+		var vs []string
+		if len(values) > 0 {
+			vs = make([]string, 0, len(values))
+		}
+		a.list = append(a.list, Attribute{Name: name, Values: vs})
 	}
 	for _, v := range values {
 		if !slices.Contains(a.list[i].Values, v) {

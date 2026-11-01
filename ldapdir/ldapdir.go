@@ -27,6 +27,7 @@ package ldapdir
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -306,21 +307,57 @@ func or(a, b string) string {
 
 func (s *Source) Describe() string { return s.cfg.URL }
 
+// unavailableCodes are the result codes that say the directory could not
+// serve the request, as opposed to answering it: RFC 4511 §4.1.9 and appendix
+// A.2 -- timeLimitExceeded (3), busy (51, "too busy to service the
+// operation"), unavailable (52, "shutting down or a subsystem necessary to
+// complete the operation is offline"), other (80, "an internal error") --
+// and the client-side codes go-ldap raises when there was no answer at all:
+// serverDown (81), timeout (85), connectError (91), network error (200).
+//
+// invalidCredentials (49) is not here, and neither is unwillingToPerform (53)
+// or inappropriateAuthentication (48): those are answers, not outages.
+var unavailableCodes = []uint16{
+	ldap.LDAPResultTimeLimitExceeded, ldap.LDAPResultBusy, ldap.LDAPResultUnavailable,
+	ldap.LDAPResultOther, ldap.LDAPResultServerDown, ldap.LDAPResultTimeout,
+	ldap.LDAPResultConnectError, ldap.ErrorNetwork,
+}
+
+// fail marks an error as directory.ErrUnavailable when it says the directory
+// could not be asked, and returns every other error unchanged. A wrong
+// password (49) is never marked.
+func fail(err error) error {
+	if err == nil || ldap.IsErrorWithCode(err, ldap.LDAPResultInvalidCredentials) {
+		return err
+	}
+	var le *ldap.Error
+	// A server's answer always arrives as an *ldap.Error carrying its result
+	// code. An error that is not one never came from a server: go-ldap hands
+	// the reader goroutine's failure over as a bare fmt.Errorf("unable to read
+	// LDAP response packet: %s") (conn.go:660, v3.4.15) whose cause is flattened
+	// to text, so a dropped connection cannot be recognised by type -- only by
+	// the absence of an answer.
+	if !errors.As(err, &le) || ldap.IsErrorAnyOf(err, unavailableCodes...) || directory.TransportFailure(err) {
+		return directory.AsUnavailable(err)
+	}
+	return err
+}
+
 func (s *Source) dial() (*ldap.Conn, error) {
 	c, err := ldap.DialURL(s.cfg.URL, ldap.DialWithTLSConfig(s.cfg.TLS))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: %s is not answering: %w", s.cfg.URL, err)
+		return nil, fail(fmt.Errorf("ldapdir: %s is not answering: %w", s.cfg.URL, err))
 	}
 	if s.cfg.StartTLS {
 		if err := c.StartTLS(s.cfg.TLS); err != nil {
 			c.Close()
-			return nil, fmt.Errorf("ldapdir: StartTLS: %w", err)
+			return nil, fail(fmt.Errorf("ldapdir: StartTLS: %w", err))
 		}
 	}
 	if s.cfg.BindDN != "" {
 		if err := c.Bind(s.cfg.BindDN, s.cfg.BindPassword); err != nil {
 			c.Close()
-			return nil, fmt.Errorf("ldapdir: binding as %s: %w", s.cfg.BindDN, err)
+			return nil, fail(fmt.Errorf("ldapdir: binding as %s: %w", s.cfg.BindDN, err))
 		}
 	}
 	return c, nil
@@ -341,7 +378,7 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 		nil,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: searching for people: %w", err)
+		return nil, fail(fmt.Errorf("ldapdir: searching for people: %w", err))
 	}
 	out := make([]*directory.Identity, 0, len(res.Entries))
 	for _, e := range res.Entries {
@@ -452,7 +489,7 @@ func (s *Source) group(group string, attrs []string) (*ldap.Entry, error) {
 		filter, want, nil,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: searching for group %q: %w", group, err)
+		return nil, fail(fmt.Errorf("ldapdir: searching for group %q: %w", group, err))
 	}
 	if len(res.Entries) == 0 {
 		return nil, fmt.Errorf("%w: %q, under %s", directory.ErrNoSuchGroup, group, s.cfg.GroupBaseDN)
@@ -480,12 +517,12 @@ func (s *Source) bindAs(dn string) func(string) error {
 		}
 		c, err := ldap.DialURL(s.cfg.URL, ldap.DialWithTLSConfig(s.cfg.TLS))
 		if err != nil {
-			return fmt.Errorf("ldapdir: %w", err)
+			return fail(fmt.Errorf("ldapdir: %w", err))
 		}
 		defer c.Close()
 		if s.cfg.StartTLS {
 			if err := c.StartTLS(s.cfg.TLS); err != nil {
-				return fmt.Errorf("ldapdir: StartTLS: %w", err)
+				return fail(fmt.Errorf("ldapdir: StartTLS: %w", err))
 			}
 		}
 		if err := c.Bind(dn, password); err != nil {
@@ -500,7 +537,9 @@ func (s *Source) bindAs(dn string) func(string) error {
 			if ldap.IsErrorWithCode(err, ldap.LDAPResultInvalidCredentials) {
 				return directory.ErrWrongPassword
 			}
-			return fmt.Errorf("ldapdir: the directory did not answer the bind: %w", err)
+			// busy, unavailable, a dropped connection: ErrUnavailable, so the
+			// caller answers "try again" and does not count a failed guess.
+			return fail(fmt.Errorf("ldapdir: the directory did not answer the bind: %w", err))
 		}
 		return nil
 	}
@@ -521,7 +560,7 @@ func (s *Source) GroupNames() ([]string, error) {
 		s.cfg.GroupFilter, []string{s.cfg.GroupAttribute}, nil,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: listing the groups under %s: %w", s.cfg.GroupBaseDN, err)
+		return nil, fail(fmt.Errorf("ldapdir: listing the groups under %s: %w", s.cfg.GroupBaseDN, err))
 	}
 	var names []string
 	for _, e := range res.Entries {
@@ -561,15 +600,17 @@ func (s *Source) Members(group string) ([]string, error) {
 		filter, attrs, nil,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: searching for group %q: %w", group, err)
+		return nil, fail(fmt.Errorf("ldapdir: searching for group %q: %w", group, err))
 	}
 	if len(res.Entries) == 0 {
 		return nil, fmt.Errorf("%w: %q, under %s", directory.ErrNoSuchGroup, group, s.cfg.GroupBaseDN)
 	}
-	var people []person // read once, when the first DN needs it
+	var people peopleIndex // read once, when the first DN needs it
 	var members []string
+	have := map[string]bool{}
 	add := func(name string) {
-		if !slices.Contains(members, name) {
+		if !have[name] {
+			have[name] = true
 			members = append(members, name)
 		}
 	}
@@ -624,7 +665,7 @@ func (s *Source) ReadGroups() (map[string]directory.GroupData, error) {
 		s.cfg.GroupFilter, want, nil,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: reading the groups under %s: %w", s.cfg.GroupBaseDN, err)
+		return nil, fail(fmt.Errorf("ldapdir: reading the groups under %s: %w", s.cfg.GroupBaseDN, err))
 	}
 
 	// The entries of each group, by name folded as caseIgnoreMatch folds it, in
@@ -648,35 +689,45 @@ func (s *Source) ReadGroups() (map[string]directory.GroupData, error) {
 		}
 	}
 
-	var people []person // read once, when the first DN needs it
+	var people peopleIndex // read once, when the first DN needs it
+	// What a member value means, by (attribute, value): whether it is a DN and,
+	// if so, whom it names. A value repeats across the groups a person is in,
+	// and parsing a DN costs about twenty allocations, so the parse is done
+	// once per distinct value and not once per occurrence.
+	type memberKey struct{ attr, value string }
 	type mapped struct {
-		name string
-		ok   bool
+		name         string
+		isDN, mapped bool
 	}
-	whom := map[string]mapped{}
-	out := map[string]directory.GroupData{}
+	whom := map[memberKey]mapped{}
+	memberAttrs := s.memberAttributes()
+	have := map[string]bool{}
+	out := make(map[string]directory.GroupData, len(spellings))
 	for k, names := range spellings {
 		var members []string
 		var merged ldap.Entry
-		have := map[string]bool{}
+		clear(have)
 		for _, e := range entries[k] {
 			merged.Attributes = append(merged.Attributes, e.Attributes...)
-			for _, a := range s.memberAttributes() {
+			for _, a := range memberAttrs {
 				for _, v := range e.GetAttributeValues(a) {
 					name := v
-					if dn, isDN := s.memberDN(a, v); isDN {
-						key := a + "\x00" + v
-						m, done := whom[key]
-						if !done {
+					key := memberKey{a, v}
+					m, done := whom[key]
+					if !done {
+						if dn, isDN := s.memberDN(a, v); isDN {
 							if people == nil {
 								if people, err = s.imported(c); err != nil {
 									return nil, err
 								}
 							}
-							m.name, m.ok = whoIs(people, dn)
-							whom[key] = m
+							m.isDN = true
+							m.name, m.mapped = whoIs(people, dn)
 						}
-						if !m.ok {
+						whom[key] = m
+					}
+					if m.isDN {
+						if !m.mapped {
 							continue
 						}
 						name = m.name
@@ -731,45 +782,48 @@ func (s *Source) memberDN(a, v string) (*ldap.DN, bool) {
 	return dn, true
 }
 
-// A person is somebody the people search imported, by the DN it returned.
-type person struct {
-	dn   *ldap.DN
-	name string
-}
+// people are the people the search imported: their names, by the DN each was
+// returned under, in the canonical form dnKey gives. Built once per read, so
+// that mapping a member DN costs one lookup and not a comparison with every
+// person.
+type peopleIndex map[string]string
 
 // imported is the people this source imports, as Identities reads them: the
 // same base, filter and naming attribute.
-func (s *Source) imported(c *ldap.Conn) ([]person, error) {
+func (s *Source) imported(c *ldap.Conn) (peopleIndex, error) {
 	res, err := c.Search(ldap.NewSearchRequest(
 		s.cfg.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
 		s.cfg.UserFilter, []string{s.cfg.UserAttribute}, nil,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: searching for people, to read a group's member DNs: %w", err)
+		return nil, fail(fmt.Errorf("ldapdir: searching for people, to read a group's member DNs: %w", err))
 	}
-	out := []person{}
+	out := make(peopleIndex, len(res.Entries))
 	for _, e := range res.Entries {
 		name := e.GetAttributeValue(s.cfg.UserAttribute)
 		dn, err := ldap.ParseDN(e.DN)
 		if name == "" || err != nil {
 			continue
 		}
-		out = append(out, person{dn: dn, name: name})
+		// The first person returned under a DN keeps it, as the linear search
+		// this replaced answered with the first match.
+		var buf [160]byte
+		k := appendDNKey(buf[:0], dn)
+		if _, dup := out[string(k)]; !dup {
+			out[string(k)] = name
+		}
 	}
 	return out, nil
 }
 
 // whoIs is the imported person whose DN is dn, by distinguishedNameMatch.
-func whoIs(people []person, dn *ldap.DN) (string, bool) {
+func whoIs(p peopleIndex, dn *ldap.DN) (string, bool) {
 	if len(dn.RDNs) == 0 {
 		return "", false
 	}
-	for _, p := range people {
-		if p.dn.EqualFold(dn) {
-			return p.name, true
-		}
-	}
-	return "", false
+	var buf [160]byte
+	name, ok := p[string(appendDNKey(buf[:0], dn))] // no allocation for the lookup
+	return name, ok
 }
 
 // cleartext refuses a plaintext ldap:// to another machine.
