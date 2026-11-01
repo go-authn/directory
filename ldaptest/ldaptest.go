@@ -129,8 +129,9 @@ type Server struct {
 
 	// Binds counts every bind attempted, successful or not. A server that
 	// claims to check a password against the directory can be SHOWN to do it.
-	binds int
-	mu    sync.Mutex
+	binds    int
+	bindCode uint16
+	mu       sync.Mutex
 
 	d  *Directory
 	ln net.Listener
@@ -187,6 +188,16 @@ func (s *Server) Binds() int {
 	return s.binds
 }
 
+// FailBindsWith makes every bind except the reader's answer with an LDAP
+// result code (RFC 4511 §4.1.9), whatever the password: busy (51) and
+// unavailable (52) for a directory that is failing, invalidCredentials (49)
+// for one that is saying no. Zero restores the normal answers.
+func (s *Server) FailBindsWith(code uint16) {
+	s.mu.Lock()
+	s.bindCode = code
+	s.mu.Unlock()
+}
+
 // DN is where a person's entry is, whether they set one or not.
 func (s *Server) DN(uid string) string {
 	if p, ok := s.d.People[uid]; ok && p.DN != "" {
@@ -209,6 +220,12 @@ func (s *Server) Bind(bindDN, password string, _ net.Conn) (server.LDAPResultCod
 	}
 	if bindDN == s.ReaderDN && password == s.ReaderPassword {
 		return server.LDAPResultSuccess, nil
+	}
+	s.mu.Lock()
+	code := s.bindCode
+	s.mu.Unlock()
+	if code != 0 {
+		return server.LDAPResultCode(code), nil
 	}
 	for uid, p := range s.d.People {
 		if s.DN(uid) == bindDN && p.Password != "" && password == p.Password {

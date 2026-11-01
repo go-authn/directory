@@ -27,6 +27,7 @@ package ldapdir
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -306,21 +307,57 @@ func or(a, b string) string {
 
 func (s *Source) Describe() string { return s.cfg.URL }
 
+// unavailableCodes are the result codes that say the directory could not
+// serve the request, as opposed to answering it: RFC 4511 §4.1.9 and appendix
+// A.2 -- timeLimitExceeded (3), busy (51, "too busy to service the
+// operation"), unavailable (52, "shutting down or a subsystem necessary to
+// complete the operation is offline"), other (80, "an internal error") --
+// and the client-side codes go-ldap raises when there was no answer at all:
+// serverDown (81), timeout (85), connectError (91), network error (200).
+//
+// invalidCredentials (49) is not here, and neither is unwillingToPerform (53)
+// or inappropriateAuthentication (48): those are answers, not outages.
+var unavailableCodes = []uint16{
+	ldap.LDAPResultTimeLimitExceeded, ldap.LDAPResultBusy, ldap.LDAPResultUnavailable,
+	ldap.LDAPResultOther, ldap.LDAPResultServerDown, ldap.LDAPResultTimeout,
+	ldap.LDAPResultConnectError, ldap.ErrorNetwork,
+}
+
+// fail marks an error as directory.ErrUnavailable when it says the directory
+// could not be asked, and returns every other error unchanged. A wrong
+// password (49) is never marked.
+func fail(err error) error {
+	if err == nil || ldap.IsErrorWithCode(err, ldap.LDAPResultInvalidCredentials) {
+		return err
+	}
+	var le *ldap.Error
+	// A server's answer always arrives as an *ldap.Error carrying its result
+	// code. An error that is not one never came from a server: go-ldap hands
+	// the reader goroutine's failure over as a bare fmt.Errorf("unable to read
+	// LDAP response packet: %s") (conn.go:660, v3.4.15) whose cause is flattened
+	// to text, so a dropped connection cannot be recognised by type -- only by
+	// the absence of an answer.
+	if !errors.As(err, &le) || ldap.IsErrorAnyOf(err, unavailableCodes...) || directory.TransportFailure(err) {
+		return directory.AsUnavailable(err)
+	}
+	return err
+}
+
 func (s *Source) dial() (*ldap.Conn, error) {
 	c, err := ldap.DialURL(s.cfg.URL, ldap.DialWithTLSConfig(s.cfg.TLS))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: %s is not answering: %w", s.cfg.URL, err)
+		return nil, fail(fmt.Errorf("ldapdir: %s is not answering: %w", s.cfg.URL, err))
 	}
 	if s.cfg.StartTLS {
 		if err := c.StartTLS(s.cfg.TLS); err != nil {
 			c.Close()
-			return nil, fmt.Errorf("ldapdir: StartTLS: %w", err)
+			return nil, fail(fmt.Errorf("ldapdir: StartTLS: %w", err))
 		}
 	}
 	if s.cfg.BindDN != "" {
 		if err := c.Bind(s.cfg.BindDN, s.cfg.BindPassword); err != nil {
 			c.Close()
-			return nil, fmt.Errorf("ldapdir: binding as %s: %w", s.cfg.BindDN, err)
+			return nil, fail(fmt.Errorf("ldapdir: binding as %s: %w", s.cfg.BindDN, err))
 		}
 	}
 	return c, nil
@@ -341,7 +378,7 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 		nil,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: searching for people: %w", err)
+		return nil, fail(fmt.Errorf("ldapdir: searching for people: %w", err))
 	}
 	out := make([]*directory.Identity, 0, len(res.Entries))
 	for _, e := range res.Entries {
@@ -452,7 +489,7 @@ func (s *Source) group(group string, attrs []string) (*ldap.Entry, error) {
 		filter, want, nil,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: searching for group %q: %w", group, err)
+		return nil, fail(fmt.Errorf("ldapdir: searching for group %q: %w", group, err))
 	}
 	if len(res.Entries) == 0 {
 		return nil, fmt.Errorf("%w: %q, under %s", directory.ErrNoSuchGroup, group, s.cfg.GroupBaseDN)
@@ -480,12 +517,12 @@ func (s *Source) bindAs(dn string) func(string) error {
 		}
 		c, err := ldap.DialURL(s.cfg.URL, ldap.DialWithTLSConfig(s.cfg.TLS))
 		if err != nil {
-			return fmt.Errorf("ldapdir: %w", err)
+			return fail(fmt.Errorf("ldapdir: %w", err))
 		}
 		defer c.Close()
 		if s.cfg.StartTLS {
 			if err := c.StartTLS(s.cfg.TLS); err != nil {
-				return fmt.Errorf("ldapdir: StartTLS: %w", err)
+				return fail(fmt.Errorf("ldapdir: StartTLS: %w", err))
 			}
 		}
 		if err := c.Bind(dn, password); err != nil {
@@ -500,7 +537,9 @@ func (s *Source) bindAs(dn string) func(string) error {
 			if ldap.IsErrorWithCode(err, ldap.LDAPResultInvalidCredentials) {
 				return directory.ErrWrongPassword
 			}
-			return fmt.Errorf("ldapdir: the directory did not answer the bind: %w", err)
+			// busy, unavailable, a dropped connection: ErrUnavailable, so the
+			// caller answers "try again" and does not count a failed guess.
+			return fail(fmt.Errorf("ldapdir: the directory did not answer the bind: %w", err))
 		}
 		return nil
 	}
@@ -521,7 +560,7 @@ func (s *Source) GroupNames() ([]string, error) {
 		s.cfg.GroupFilter, []string{s.cfg.GroupAttribute}, nil,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: listing the groups under %s: %w", s.cfg.GroupBaseDN, err)
+		return nil, fail(fmt.Errorf("ldapdir: listing the groups under %s: %w", s.cfg.GroupBaseDN, err))
 	}
 	var names []string
 	for _, e := range res.Entries {
@@ -561,7 +600,7 @@ func (s *Source) Members(group string) ([]string, error) {
 		filter, attrs, nil,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: searching for group %q: %w", group, err)
+		return nil, fail(fmt.Errorf("ldapdir: searching for group %q: %w", group, err))
 	}
 	if len(res.Entries) == 0 {
 		return nil, fmt.Errorf("%w: %q, under %s", directory.ErrNoSuchGroup, group, s.cfg.GroupBaseDN)
@@ -624,7 +663,7 @@ func (s *Source) ReadGroups() (map[string]directory.GroupData, error) {
 		s.cfg.GroupFilter, want, nil,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: reading the groups under %s: %w", s.cfg.GroupBaseDN, err)
+		return nil, fail(fmt.Errorf("ldapdir: reading the groups under %s: %w", s.cfg.GroupBaseDN, err))
 	}
 
 	// The entries of each group, by name folded as caseIgnoreMatch folds it, in
@@ -745,7 +784,7 @@ func (s *Source) imported(c *ldap.Conn) ([]person, error) {
 		s.cfg.UserFilter, []string{s.cfg.UserAttribute}, nil,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("ldapdir: searching for people, to read a group's member DNs: %w", err)
+		return nil, fail(fmt.Errorf("ldapdir: searching for people, to read a group's member DNs: %w", err))
 	}
 	out := []person{}
 	for _, e := range res.Entries {
