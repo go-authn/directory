@@ -3,6 +3,28 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
+## v0.18.0 — 2026-11-05
+
+### A name held by two entries is an error, not a pick
+
+Security audit 2026-11-05. With two LDAP entries sharing a uid, `Identities`
+used to return both and `Set.Identities` kept whichever came first (the order
+the server answered in), silently dropping the other: one person got the
+other's groups, keys and password check.
+
+- `ldapdir.Source.Identities` returns `directory.ErrAmbiguous`, naming both
+  DNs, when two entries carry the same name. The names compare without case
+  (uid is `caseIgnoreMatch`, RFC 4519).
+- `Set.Identities` returns `ErrAmbiguous` when ONE source lists a name twice.
+  Across sources nothing changes: the first source that knows a name owns it.
+- `ldaptest.Person.UID`: the uid published when it is not the map key, so a
+  test can build two entries with one uid.
+
+Upgrade: a directory that has such duplicates now fails to load until the
+duplicate is removed or one entry's uid is corrected (a server in front,
+such as authnd, will report the error at startup and at refresh). Look with
+`ldapsearch -b <base> '(uid=*)' uid dn` for repeated values.
+
 ## v0.17.0 — 2026-11-01
 
 ### An outage is not a wrong password

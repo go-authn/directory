@@ -466,7 +466,9 @@ every bind with a given result code.
 The first source that knows a name owns it. A site with its people in LDAP and
 one service account written down locally should not have to put the service
 account in LDAP — and adding somebody to LDAP must not break a server that has
-them written down. Group membership, by contrast, is the **union**: a group can
+them written down. That is across sources: **within one source a name held by
+two entries is `ErrAmbiguous`**, never a pick (two LDAP entries with one uid,
+compared without case, fail `Identities` naming both DNs). Group membership, by contrast, is the **union**: a group can
 have people from both, and returning only the first half would silently exclude
 the rest.
 
