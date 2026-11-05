@@ -381,6 +381,7 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 		return nil, fail(fmt.Errorf("ldapdir: searching for people: %w", err))
 	}
 	out := make([]*directory.Identity, 0, len(res.Entries))
+	byName := make(map[string]string, len(res.Entries)) // lower-cased name -> DN
 	for _, e := range res.Entries {
 		name := e.GetAttributeValue(s.cfg.UserAttribute)
 		if name == "" {
@@ -388,6 +389,15 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 			// schema object that matched the filter.
 			continue
 		}
+		// uid is caseIgnoreMatch (RFC 4519 §2.39): "alice" and "Alice" are one
+		// name. Two entries under one name are two people nobody can tell
+		// apart, and picking the first would hand one of them the other's
+		// groups, keys and password check.
+		key := strings.ToLower(name)
+		if first, dup := byName[key]; dup {
+			return nil, fmt.Errorf("ldapdir: %w: %q is held by %s and %s", directory.ErrAmbiguous, name, first, e.DN)
+		}
+		byName[key] = e.DN
 		opts := []directory.Option{directory.From(s.cfg.URL)}
 		if h := e.GetAttributeValue("sambaNTPassword"); h != "" {
 			raw, err := directory.ParseNTHash(h)

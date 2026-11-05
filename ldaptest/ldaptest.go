@@ -68,6 +68,10 @@ import (
 type Person struct {
 	// DN defaults to uid=<name>,<BaseDN>.
 	DN string
+	// UID is the value of the uid attribute, when it is not the map key: two
+	// entries under different keys (so different DNs) can then share a uid, as
+	// a badly merged directory does.
+	UID string
 	// Password is what a bind as this person accepts. Empty means no bind
 	// succeeds -- except the unauthenticated one, which succeeds for anybody.
 	Password string
@@ -282,7 +286,7 @@ func (s *Server) entries() []*server.Entry {
 		}
 		attrs := []*server.EntryAttribute{
 			{Name: "objectClass", Values: slices.Clone(classes)},
-			{Name: "uid", Values: []string{uid}},
+			{Name: "uid", Values: []string{or(p.UID, uid)}},
 		}
 		if p.NTHash != "" {
 			attrs = append(attrs, &server.EntryAttribute{Name: "sambaNTPassword", Values: []string{p.NTHash}})

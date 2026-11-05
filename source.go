@@ -77,6 +77,14 @@ type GroupObjectClasser interface {
 // ErrNoSuchGroup is what a source returns for a name it does not have.
 var ErrNoSuchGroup = errors.New("directory: no such group")
 
+// ErrAmbiguous is what a source's Identities returns when one name is held by
+// more than one entry of the SAME source (two LDAP entries with one uid): a
+// name that is not one person is never resolved by picking one.
+//
+// Across sources it is not an error: the first source that knows a name owns
+// it, which is how a local file overrides a directory.
+var ErrAmbiguous = errors.New("directory: the name is held by more than one entry")
+
 // ErrEmptyGroup is what Expand returns for a group a source HAS, with nobody
 // in it: not ErrNoSuchGroup, because the remedy differs -- a typo or a
 // deleted group on one side, a group to fill on the other. A caller that
@@ -119,7 +127,12 @@ func (s *Set) Identities() ([]*Identity, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", src.Describe(), err)
 		}
+		here := make(map[string]bool, len(ids))
 		for _, id := range ids {
+			if here[id.name] {
+				return nil, fmt.Errorf("%s: %w: %q", src.Describe(), ErrAmbiguous, id.name)
+			}
+			here[id.name] = true
 			if seen[id.name] {
 				// Deliberately not an error: adding somebody to LDAP must not
 				// break a server that has them written down locally.
