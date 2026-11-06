@@ -26,6 +26,7 @@
 package ldapdir
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -33,6 +34,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/go-authn/directory"
 	"github.com/go-ldap/ldap/v3"
@@ -434,7 +436,7 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 		// The password is never read: the directory holds it and will not give
 		// it up, which is the point of a directory. What it will do is answer
 		// "is this it", one bind at a time.
-		opts = append(opts, directory.WithVerifier(s.bindAs(e.DN)),
+		opts = append(opts, directory.WithContextVerifier(s.bindAs(e.DN)),
 			directory.WithObjectClasses(s.classes))
 		out = append(out, directory.NewIdentity(name, opts...))
 	}
@@ -516,8 +518,8 @@ func (s *Source) group(group string, attrs []string) (*ldap.Entry, error) {
 // Its own, because binding changes the state of the connection it happens on —
 // a bind as somebody else on the connection this server reads the directory
 // with would leave it reading as them.
-func (s *Source) bindAs(dn string) func(string) error {
-	return func(password string) error {
+func (s *Source) bindAs(dn string) func(context.Context, string) error {
+	return func(ctx context.Context, password string) error {
 		if password == "" {
 			// An empty password is an UNAUTHENTICATED BIND in LDAP: the server
 			// answers success and nobody has proved anything. It is the oldest
@@ -525,17 +527,35 @@ func (s *Source) bindAs(dn string) func(string) error {
 			// it is refused here.
 			return directory.ErrWrongPassword
 		}
-		c, err := ldap.DialURL(s.cfg.URL, ldap.DialWithTLSConfig(s.cfg.TLS))
+		if err := ctx.Err(); err != nil {
+			return directory.AsUnavailable(fmt.Errorf("ldapdir: %w", err))
+		}
+		// The dial ends with the context too: its deadline is the dialer's.
+		dialer := &net.Dialer{Timeout: 30 * time.Second}
+		if dl, ok := ctx.Deadline(); ok {
+			dialer.Deadline = dl
+		}
+		c, err := ldap.DialURL(s.cfg.URL, ldap.DialWithTLSConfig(s.cfg.TLS), ldap.DialWithDialer(dialer))
 		if err != nil {
 			return fail(fmt.Errorf("ldapdir: %w", err))
 		}
 		defer c.Close()
+		// ⛔ Closing the connection is what cancels a request in go-ldap, which
+		// has no context of its own and no default timeout: a bind to a server
+		// that accepts and never answers waited for ever (a test hung for ten
+		// minutes). When the caller's context ends the connection is closed, the
+		// bind returns, and the answer is "unavailable", not a wrong password.
+		stop := context.AfterFunc(ctx, func() { c.Close() })
+		defer stop()
 		if s.cfg.StartTLS {
 			if err := c.StartTLS(s.cfg.TLS); err != nil {
 				return fail(fmt.Errorf("ldapdir: StartTLS: %w", err))
 			}
 		}
 		if err := c.Bind(dn, password); err != nil {
+			if ctx.Err() != nil {
+				return directory.AsUnavailable(fmt.Errorf("ldapdir: the bind was abandoned: %w", ctx.Err()))
+			}
 			// ⛔ Only invalidCredentials (49) says the password is wrong. Every
 			// other failure -- a connection dropped mid-bind, a directory
 			// answering busy (51) or unavailable (52) -- is the directory

@@ -3,6 +3,7 @@
 package directory
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base32"
@@ -23,11 +24,12 @@ type Identity struct {
 	groups []string
 	where  string
 
-	password string
-	ntHash   []byte
-	verify   func(password string) error
-	keys     []string
-	totp     []byte
+	password  string
+	ntHash    []byte
+	verify    func(password string) error
+	verifyCtx func(ctx context.Context, password string) error
+	keys      []string
+	totp      []byte
 
 	// attrs describe; they prove nothing, and are kept apart from the
 	// credentials above so that neither can be mistaken for the other.
@@ -112,6 +114,18 @@ func WithNTHash(hash []byte) Option {
 // the right amount to tell somebody who has not proved who they are.
 func WithVerifier(verify func(password string) error) Option {
 	return func(i *Identity) { i.verify = verify }
+}
+
+// WithContextVerifier is [WithVerifier] for a check that can be CANCELLED: a
+// bind against another server, which a caller that has given up on it must be
+// able to abandon, closing the connection, instead of leaving it to the
+// library's own timeout. [Identity.Verify] still works (with a background
+// context); [Identity.VerifyContext] passes the caller's.
+func WithContextVerifier(verify func(ctx context.Context, password string) error) Option {
+	return func(i *Identity) {
+		i.verifyCtx = verify
+		i.verify = func(password string) error { return verify(context.Background(), password) }
+	}
 }
 
 // WithPublicKeys gives SSH public keys, each in authorized_keys spelling.
@@ -252,6 +266,17 @@ func (i *Identity) Verify(password string) error {
 		return ErrWrongPassword
 	}
 	return ErrNoCredential
+}
+
+// VerifyContext is [Identity.Verify] that gives up when ctx ends: for a source
+// that gave a [WithContextVerifier] the upstream operation is cancelled and the
+// connection closed, and the error is [ErrUnavailable]; for any other identity
+// it is Verify, which cannot be interrupted once started.
+func (i *Identity) VerifyContext(ctx context.Context, password string) error {
+	if i.verifyCtx != nil {
+		return i.verifyCtx(ctx, password)
+	}
+	return i.Verify(password)
 }
 
 // NTKey is the key NTLMv2 is computed with: MD4(UTF16LE(password)).
