@@ -461,6 +461,17 @@ may return `directory.AsUnavailable(err)` for a database it cannot reach, and
 failing. `ldaptest.Server.FailBindsWith(code)` makes a test directory answer
 every bind with a given result code.
 
+**A check can be cancelled.** `Identity.VerifyContext(ctx, password)` gives up
+when `ctx` ends: for an `ldapdir` identity the upstream connection is closed
+(that is what cancels a request in go-ldap, which has no context and no default
+timeout: a bind to a server that accepts and never answers used to wait for
+ever) and the answer is `ErrUnavailable`. A source supplies one with
+`directory.WithContextVerifier`; `Verify` still works, with a background
+context, and an identity with only a `WithVerifier` is `Verify` (not
+interruptible). A server that bounds a bind (authnd's `operation_timeout`)
+should call `VerifyContext`, so that a hung upstream does not keep a goroutine
+and a connection after the answer was given.
+
 ## Several sources, in order
 
 The first source that knows a name owns it. A site with its people in LDAP and

@@ -3,6 +3,20 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
+## v0.19.0 — 2026-11-06
+
+### A password check can be cancelled
+
+- `directory.WithContextVerifier` and `Identity.VerifyContext(ctx, password)`.
+  `ldapdir` supplies one: when the context ends the upstream connection is
+  closed and the answer is `ErrUnavailable`. go-ldap has no context and no
+  default timeout, so a bind to an upstream that accepts and never answers
+  waited for ever (a test hung for ten minutes); the goroutine and the
+  connection were held until the upstream let go.
+- The dial of a check ends at the context's deadline too (30 s otherwise).
+- `Verify` and `WithVerifier` are unchanged. Upgrade: a server that bounds a
+  check should call `VerifyContext` (authnd v0.18.0 does).
+
 ## v0.18.0 — 2026-11-05
 
 ### A name held by two entries is an error, not a pick

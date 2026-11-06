@@ -1,6 +1,7 @@
 package ldapdir
 
 import (
+	"context"
 	"errors"
 	"net"
 	"testing"
@@ -28,7 +29,7 @@ func TestADirectoryFailingMidBindIsNotAWrongPassword(t *testing.T) {
 		}
 	}()
 	s := &Source{cfg: Config{URL: "ldap://" + ln.Addr().String()}}
-	err = s.bindAs("uid=alice,ou=people,dc=example,dc=org")("hunter2")
+	err = s.bindAs("uid=alice,ou=people,dc=example,dc=org")(context.Background(), "hunter2")
 	if err == nil {
 		t.Fatal("a bind nobody answered succeeded")
 	}
