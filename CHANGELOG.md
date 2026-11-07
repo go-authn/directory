@@ -12,7 +12,9 @@ are described in their pull requests and release notes.
   blocked the read for ever, and a caller refreshing periodically froze on it
   until a restart (go-authn/authnd#87). The deadline covers reading the rows,
   and the driver drops the connection when it ends. No change to the `Source`
-  interface. Behaviour change: a single query slower than 30 s now fails; say
+  interface. `hcldir.Block.QueryTimeout` (`query_timeout = "20s"` in a `sql`
+  block, checked without a network, refused on an `ldap` block) reaches it:
+  a caller that refreshes sets it below its period. Behaviour change: a single query slower than 30 s now fails; say
   `WithQueryTimeout` for a slower one.
 
 ## v0.19.0 — 2026-11-06
