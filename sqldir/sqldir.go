@@ -27,10 +27,12 @@
 package sqldir
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/go-authn/directory"
 )
@@ -95,7 +97,38 @@ type Source struct {
 	declared, groupDeclared []string
 	classes, groupClasses   directory.ObjectClasses
 
-	ownsDB bool
+	ownsDB  bool
+	timeout time.Duration
+}
+
+// DefaultQueryTimeout is how long one query, rows read to the end, may take
+// unless [WithQueryTimeout] says otherwise.
+//
+// ⛔ Queries used to run with db.Query and no deadline: a server that stopped
+// answering on a live connection (a partition without RST, a frozen server, a
+// firewall dropping packets) blocked the read for ever, and a caller that
+// refreshes periodically froze on it until a restart.
+const DefaultQueryTimeout = 30 * time.Second
+
+// WithQueryTimeout bounds every query this source runs, including reading its
+// rows, by d; past it the read returns an error and the driver drops the
+// connection. Zero means no limit, on purpose. The default is
+// [DefaultQueryTimeout].
+func WithQueryTimeout(d time.Duration) Option { return func(s *Source) { s.timeout = d } }
+
+// query runs q under the source's deadline. The caller defers the returned
+// cancel for as long as it reads the rows.
+func (s *Source) query(q string) (*sql.Rows, context.CancelFunc, error) {
+	ctx, cancel := context.Background(), context.CancelFunc(func() {})
+	if s.timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, s.timeout)
+	}
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return rows, cancel, nil
 }
 
 // WithObjectClasses declares the auxiliary object classes every person this
@@ -164,7 +197,7 @@ func New(db *sql.DB, q Queries, opts ...Option) (*Source, error) {
 	if strings.TrimSpace(q.People) == "" {
 		return nil, fmt.Errorf("sqldir: no query for the people")
 	}
-	s := &Source{db: db, q: q, name: "a database"}
+	s := &Source{db: db, q: q, name: "a database", timeout: DefaultQueryTimeout}
 	for _, o := range opts {
 		o(s)
 	}
@@ -189,10 +222,11 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 		return nil, err
 	}
 
-	rows, err := s.db.Query(s.q.People)
+	rows, cancel, err := s.query(s.q.People)
 	if err != nil {
 		return nil, fmt.Errorf("sqldir: reading the people: %w", err)
 	}
+	defer cancel()
 	defer rows.Close()
 
 	cols, err := rows.Columns()
@@ -267,10 +301,11 @@ func (s *Source) attributes(query, what string) (map[string]directory.Attributes
 	if strings.TrimSpace(query) == "" {
 		return nil, nil
 	}
-	rows, err := s.db.Query(query)
+	rows, cancel, err := s.query(query)
 	if err != nil {
 		return nil, fmt.Errorf("sqldir: reading the %s: %w", what, err)
 	}
+	defer cancel()
 	defer rows.Close()
 
 	cols, err := rows.Columns()
@@ -343,10 +378,11 @@ func (s *Source) memberships() (map[string][]string, []string, error) {
 	if strings.TrimSpace(s.q.Groups) == "" {
 		return nil, nil, nil
 	}
-	rows, err := s.db.Query(s.q.Groups)
+	rows, cancel, err := s.query(s.q.Groups)
 	if err != nil {
 		return nil, nil, fmt.Errorf("sqldir: reading the groups: %w", err)
 	}
+	defer cancel()
 	defer rows.Close()
 	members := map[string][]string{}
 	var order []string
