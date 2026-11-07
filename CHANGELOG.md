@@ -3,6 +3,18 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
+## v0.20.0 — 2026-11-07
+
+- **`sqldir` bounds every query.** `sqldir.WithQueryTimeout(d)`; the default
+  is `sqldir.DefaultQueryTimeout` (30 s), `0` means no limit on purpose.
+  Queries ran with `db.Query` and no deadline, so a database that accepted a
+  connection and stopped answering (a partition without RST, a frozen server)
+  blocked the read for ever, and a caller refreshing periodically froze on it
+  until a restart (go-authn/authnd#87). The deadline covers reading the rows,
+  and the driver drops the connection when it ends. No change to the `Source`
+  interface. Behaviour change: a single query slower than 30 s now fails; say
+  `WithQueryTimeout` for a slower one.
+
 ## v0.19.0 — 2026-11-06
 
 ### A password check can be cancelled
