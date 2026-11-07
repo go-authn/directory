@@ -61,12 +61,17 @@ func openSQL(b Block) (directory.Source, error) {
 	// this directory publish no groups. GroupObjectClasser would have made it
 	// eight types; the source returned now is the *sqldir.Source itself, with
 	// every method it has.
-	src, err := sqldir.New(db, sqldir.Queries{People: b.UsersQuery, Groups: b.GroupsQuery,
-		PeopleAttributes: b.UsersAttributesQuery, GroupAttributes: b.GroupsAttributesQuery},
-		sqldir.Named("a "+b.Driver+" database"),
+	opts := []sqldir.Option{
+		sqldir.Named("a " + b.Driver + " database"),
 		sqldir.WithObjectClasses(b.ObjectClasses...),
 		sqldir.WithGroupObjectClasses(b.GroupObjectClasses...),
-		sqldir.ClosesDB())
+		sqldir.ClosesDB(),
+	}
+	if d, _ := b.queryTimeout(); len(d) == 1 { // checked by Check
+		opts = append(opts, sqldir.WithQueryTimeout(d[0]))
+	}
+	src, err := sqldir.New(db, sqldir.Queries{People: b.UsersQuery, Groups: b.GroupsQuery,
+		PeopleAttributes: b.UsersAttributesQuery, GroupAttributes: b.GroupsAttributesQuery}, opts...)
 	if err != nil {
 		db.Close()
 		return nil, err

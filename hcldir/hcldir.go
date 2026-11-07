@@ -56,6 +56,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/go-authn/directory"
 	"github.com/hashicorp/hcl/v2"
@@ -80,6 +81,10 @@ type Block struct {
 	// an attribute, named as it is aliased.
 	UsersAttributesQuery  string `hcl:"users_attributes,optional"`
 	GroupsAttributesQuery string `hcl:"groups_attributes,optional"`
+	// QueryTimeout bounds each query of a sql block, rows included: a Go
+	// duration ("20s"), "0" for no limit, empty for [sqldir.DefaultQueryTimeout].
+	// A caller that refreshes periodically sets it below its period.
+	QueryTimeout string `hcl:"query_timeout,optional"`
 
 	// ldap.
 	URL              string `hcl:"url,optional"`
@@ -146,6 +151,18 @@ type Block struct {
 	StartTLS bool `hcl:"start_tls,optional"`
 }
 
+// queryTimeout is QueryTimeout as a duration, and whether it was set at all.
+func (b Block) queryTimeout() (set []time.Duration, err error) {
+	if b.QueryTimeout == "" {
+		return nil, nil
+	}
+	d, err := time.ParseDuration(b.QueryTimeout)
+	if err != nil || d < 0 {
+		return nil, fmt.Errorf(`users "sql" query_timeout %q: a duration such as "20s", or "0" for no limit`, b.QueryTimeout)
+	}
+	return []time.Duration{d}, nil
+}
+
 // Kinds are the kinds a block can be, for a message that lists them.
 var Kinds = []string{"ldap", "sql"}
 
@@ -167,12 +184,16 @@ func (b Block) Check() error {
 		if b.DSNFile == "" {
 			return fmt.Errorf("a dsn_file is needed: a DSN holds a password, so it lives in a file and not on a command line")
 		}
+		if _, err := b.queryTimeout(); err != nil {
+			return err
+		}
 		if strings.TrimSpace(b.UsersQuery) == "" {
 			return fmt.Errorf(`users "sql" has no query for the people: the queries are yours, because your people are already in your shape`)
 		}
 	case "ldap":
 		if bad := named(map[string]string{"driver": b.Driver, "dsn_file": b.DSNFile,
-			"users_attributes": b.UsersAttributesQuery, "groups_attributes": b.GroupsAttributesQuery}); bad != "" {
+			"users_attributes": b.UsersAttributesQuery, "groups_attributes": b.GroupsAttributesQuery,
+			"query_timeout": b.QueryTimeout}); bad != "" {
 			return fmt.Errorf(`users "ldap" has %s in it, which belongs to a sql block`, bad)
 		}
 		// Checked here, without a network, by the same rule ldapdir.New
