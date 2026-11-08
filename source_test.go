@@ -203,12 +203,52 @@ func TestGroupNamesReportsABrokenLister(t *testing.T) {
 	// With something that works alongside it, the answer is what could be
 	// read: a server that publishes nothing because one source is down is
 	// worse than one that publishes what it has.
-	set = NewSet(&brokenLister{}, &Static{Groups: map[string][]string{"staff": {"alice"}}})
+	// With something that works alongside it, the answer is still what could
+	// be read, but the failure is reported next to it (see
+	// TestGroupNamesPartialResultAndError).
+}
+
+// GroupNames returns what the sources that answered named AND an error
+// naming every source that failed, so a caller can publish the partial list
+// and still say it is partial. Before v0.21.0 the error was dropped whenever
+// another source answered (go-authn/directory#38).
+func TestGroupNamesPartialResultAndError(t *testing.T) {
+	down := fmt.Errorf("dial: %w", ErrUnavailable)
+	set := NewSet(
+		&failingLister{name: "the first down one", err: down},
+		&Static{Name: "the file", Groups: map[string][]string{"staff": {"alice"}}},
+		&failingLister{name: "the second down one", err: errors.New("boom")},
+	)
 	names, err := set.GroupNames()
-	if err != nil || strings.Join(names, ",") != "staff" {
-		t.Errorf("GroupNames() = %v, %v", names, err)
+	if strings.Join(names, ",") != "staff" {
+		t.Errorf("names = %v, want the good source's", names)
+	}
+	if err == nil {
+		t.Fatal("err == nil: the failed sources were dropped")
+	}
+	for _, want := range []string{"the first down one: dial", "the second down one: boom"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "the file") {
+		t.Errorf("err = %q names a source that answered", err)
+	}
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("errors.Is(err, ErrUnavailable) = false for %v", err)
 	}
 }
+
+// failingLister lists nothing and fails with the error it was given.
+type failingLister struct {
+	name string
+	err  error
+}
+
+func (f *failingLister) Describe() string                 { return f.name }
+func (f *failingLister) Identities() ([]*Identity, error) { return nil, nil }
+func (f *failingLister) Members(string) ([]string, error) { return nil, f.err }
+func (f *failingLister) GroupNames() ([]string, error)    { return nil, f.err }
 
 // namedOnly answers about a group by name and cannot list.
 type namedOnly struct{ groups map[string][]string }

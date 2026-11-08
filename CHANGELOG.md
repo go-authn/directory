@@ -3,6 +3,20 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
+## v0.21.0 — 2026-11-08
+
+- **`Set.GroupNames` reports the sources that failed.** It returns the names
+  of the sources that answered AND an `errors.Join` of
+  `"<describe>: <err>"` for every source that failed (`errors.Is` still
+  matches `ErrUnavailable`). Before, the error was dropped whenever another
+  source answered: a partial list came back with `err == nil`
+  (go-authn/directory#38; the other part of it, the bulk read, is
+  `GroupReader` / `Set.Frozen` since v0.16.0). Behaviour change: a caller
+  that tested only `err != nil` now sees an error where it saw a partial
+  list, and the names are returned alongside it (they were `nil` only when
+  every source failed, and still are empty then). A caller that can publish
+  what it has should use the names and log the error.
+
 ## v0.20.0 — 2026-11-07
 
 - **`sqldir` bounds every query.** `sqldir.WithQueryTimeout(d)`; the default

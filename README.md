@@ -412,7 +412,12 @@ source may answer the second and not the first — an LDAP directory can permit
 a lookup and refuse an enumeration. So `Set.GroupNames()` reads the sources
 that *can* list (the optional `GroupLister`) and skips the rest: a server
 publishing a list of groups can honestly publish fewer than `Members` would
-answer for, and a server checking membership keeps asking `Members`.
+answer for, and a server checking membership keeps asking `Members`. A
+source that can list and **fails** is not skipped silently: `GroupNames`
+returns the names the other sources gave together with an error naming every
+failed source (`errors.Join`; `errors.Is(err, directory.ErrUnavailable)`
+works), like `io.Reader` returns data and an error. Publish the names, report
+the error.
 
 A server that publishes **every** group asks each one three questions, and for
 a database or a directory each answer would read the whole thing again.
