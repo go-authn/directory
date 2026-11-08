@@ -308,9 +308,18 @@ func (s *Set) GroupObjectClasses(group string) (ObjectClasses, error) {
 // LDAP directory that will not enumerate still answers about a group somebody
 // names. A caller publishing a list should say where it came from, and a
 // caller checking membership should keep asking Members.
+//
+// ⛔ The result is PARTIAL with an error, like [io.Reader]: the names are those
+// of the sources that answered, and the error (an [errors.Join] of
+// "<describe>: <err>", one per source that failed, in source order) is
+// non-nil as soon as ANY source failed, even when others answered. A caller
+// that can publish what it has should use the names and report the error; one
+// that needs the whole list should treat the error as failure.
+// [errors.Is] still matches what a source returned, [ErrUnavailable] included.
+// Before v0.21.0 the error was dropped whenever another source answered.
 func (s *Set) GroupNames() ([]string, error) {
 	var names []string
-	var firstErr error
+	var errs []error
 	for _, src := range s.sources {
 		lister, ok := src.(GroupLister)
 		if !ok {
@@ -318,18 +327,13 @@ func (s *Set) GroupNames() ([]string, error) {
 		}
 		got, err := lister.GroupNames()
 		if err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("%s: %w", src.Describe(), err)
-			}
+			errs = append(errs, fmt.Errorf("%s: %w", src.Describe(), err))
 			continue
 		}
 		names = append(names, got...)
 	}
-	if len(names) == 0 && firstErr != nil {
-		return nil, firstErr
-	}
 	slices.Sort(names)
-	return slices.Compact(names), nil
+	return slices.Compact(names), errors.Join(errs...)
 }
 
 // Close closes whichever sources hold something open.
