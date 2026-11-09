@@ -9,6 +9,17 @@ import (
 	"github.com/go-ldap/ldap/v3"
 )
 
+// whoIs is the imported person whose DN is dn, by distinguishedNameMatch,
+// through the key: what the production path does now from the DN's string.
+func whoIs(p peopleIndex, dn *ldap.DN) (string, bool) {
+	if len(dn.RDNs) == 0 {
+		return "", false
+	}
+	var buf [160]byte
+	name, ok := p[string(appendDNKey(buf[:0], dn))] // no allocation for the lookup
+	return name, ok
+}
+
 // whoIsLinear is the lookup dnKey replaced, kept as the oracle: the first
 // person whose DN is EqualFold to dn.
 type linearPerson struct {

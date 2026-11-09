@@ -3,7 +3,26 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
-## Unreleased
+## v0.23.0
+
+- **`ldapdir` reads through go-authn/ldap's own client** (`ldap.Dial`,
+  `Bind`, `StartTLS`, `Search`), not go-ldap/ldap/v3 and asn1-ber: a message
+  is decoded straight into the entry, with no tree of packets, so the wire
+  library's share of a refresh is gone. Measured against a recorded server
+  (`BenchmarkRefreshClientOnly`: the answers ldaptest sent, replayed from a
+  loopback listener, so only the client is charged; 10,000 people, 2,000
+  groups of 50), v0.21.0 -> v0.23.0: 4.32 M -> 0.38 M allocations (-91 %),
+  288 -> 35 MiB (-88 %), 178 -> 90 ms; with the in-process glauth server
+  (`BenchmarkRefresh`) 7.18 M -> 3.24 M, the rest being that server.
+  Behaviour kept: ErrUnavailable for a dropped connection, a timeout or a
+  server's `busy`/`unavailable`/`other`/`timeLimitExceeded`; a wrong password
+  only for `invalidCredentials`; `VerifyContext` cancels by closing. New:
+  every message, entry count and result size the server sends is bounded
+  (go-authn/ldap `ClientLimits`), and a read waits at most 5 minutes for the
+  server's next message. go-ldap stays for `ParseDN`, in the one case a DN is
+  not plain, and as the judge in the tests (go-authn/directory#42).
+
+## v0.22.0
 
 - **`ldapdir` searches are paged** (RFC 2696, `PageSize` / `page_size`, default
   500; negative = no control), so a server that caps an unpaged answer (Active

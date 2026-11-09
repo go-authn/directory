@@ -161,7 +161,7 @@ id.ObjectClasses()   // [supannPerson eduPerson]: declared order, no repeats (ca
 |---|---|---|
 | `directory` | a `Static` list you build | **none** |
 | `directory/sqldir` | any `*sql.DB`, with **your** queries | none — the driver is yours to pick |
-| `directory/ldapdir` | an LDAP server | `go-ldap/ldap/v3` |
+| `directory/ldapdir` | an LDAP server | `go-authn/ldap` (its client: bind, StartTLS, paged search); `go-ldap/ldap/v3` only to parse a DN that is not plain |
 | `directory/hcldir` | a `users` block naming a database or an LDAP server, **and** `user`/`group` blocks holding the people themselves | `golang.org/x/crypto/ssh`, to parse an authorized_keys line; `hashicorp/hcl/v2` and `zclconf/go-cty`, to rewrite a file in place (`SetPassword`) and to say where a refused value was written |
 | `directory/ldaptest` | *(an LDAP directory to test against)* | `glauth/ldap` |
 
@@ -454,9 +454,9 @@ default:                                            // another failure
 
 `ldapdir` marks, on `Verify` and on every read, what RFC 4511 §4.1.9 and
 appendix A.2 call `busy` (51), `unavailable` (52), `other` (80) and
-`timeLimitExceeded` (3), the client-side server-down, timeout, connect-error and
-network-error codes of go-ldap, and any failure that is not a server's answer at
-all (a refused or dropped connection, a TLS handshake that fails). The cause
+`timeLimitExceeded` (3), and any failure that is not a server's answer at all
+(a refused or dropped connection, a read that times out, a message that is not
+LDAP, a TLS handshake that fails). The cause
 stays reachable with `errors.Is` and `errors.As`, and the message does not change.
 `invalidCredentials` (49) is only ever `ErrWrongPassword`; `unwillingToPerform`
 (53) and `inappropriateAuthentication` (48) are neither, because they are
@@ -469,9 +469,10 @@ every bind with a given result code.
 
 **A check can be cancelled.** `Identity.VerifyContext(ctx, password)` gives up
 when `ctx` ends: for an `ldapdir` identity the upstream connection is closed
-(that is what cancels a request in go-ldap, which has no context and no default
-timeout: a bind to a server that accepts and never answers used to wait for
-ever) and the answer is `ErrUnavailable`. A source supplies one with
+(that is what cancels a request: the client library this package used had no
+context and no default timeout, and a bind to a server that accepts and never
+answers used to wait for ever; go-authn/ldap's client now also gives up on a
+silent server after 5 minutes) and the answer is `ErrUnavailable`. A source supplies one with
 `directory.WithContextVerifier`; `Verify` still works, with a background
 context, and an identity with only a `WithVerifier` is `Verify` (not
 interruptible). A server that bounds a bind (authnd's `operation_timeout`)

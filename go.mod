@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	github.com/glauth/ldap v0.0.0-20260718202943-34c5f9b3cbf1
+	github.com/go-authn/ldap v0.13.0
 	github.com/go-ldap/ldap/v3 v3.4.15
 	github.com/hashicorp/hcl/v2 v2.25.0
 	github.com/zclconf/go-cty v1.19.0

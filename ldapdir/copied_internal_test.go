@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/go-ldap/ldap/v3"
+	ldap "github.com/go-authn/ldap"
 )
 
 // What an entry answers, read by RFC 4512 §2.5's equivalence: the same type
@@ -14,12 +14,12 @@ import (
 // here because a server filters what it returns, and a filtering server would
 // hide a reader that matched too much.
 func TestCopiedMatchesDescriptionsExactly(t *testing.T) {
-	e := &ldap.Entry{Attributes: []*ldap.EntryAttribute{
-		{Name: "description", Values: []string{"a person"}},
-		{Name: "Description;x-A;Lang-FR", Values: []string{"une personne"}},
-		{Name: "description;lang-fr", Values: []string{"pas celle-ci"}},
-		{Name: "MAIL", Values: []string{"a@x.example", ""}},
-		{Name: "mail", Values: []string{"b@x.example"}},
+	e := &ldap.Entry{Attributes: []*ldap.Attribute{
+		ldap.StringAttribute("description", "a person"),
+		ldap.StringAttribute("Description;x-A;Lang-FR", "une personne"),
+		ldap.StringAttribute("description;lang-fr", "pas celle-ci"),
+		ldap.StringAttribute("MAIL", "a@x.example", ""),
+		ldap.StringAttribute("mail", "b@x.example"),
 	}}
 	a, err := copied(e, []string{"description;x-a;lang-fr", "mail", "gecos"})
 	if err != nil {
