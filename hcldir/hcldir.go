@@ -111,6 +111,9 @@ type Block struct {
 	// read from; empty reads memberUid and member both. A DN maps only to a
 	// person this block imported: see ldapdir.Source.Members.
 	MemberAttribute string `hcl:"group_member_attribute,optional"`
+	// PageSize is the page size of the paged results control (RFC 2696);
+	// 0 means 500, a negative value sends no control.
+	PageSize int `hcl:"page_size,optional"`
 
 	// Attributes and GroupAttributes are what to copy from each person's and
 	// each group's entry, as they are named there: ["mail", "uidNumber"].

@@ -45,6 +45,76 @@ func appendDNKey(dst []byte, dn *ldap.DN) []byte {
 	return dst
 }
 
+// appendKeyOf appends the key of the DN written s -- what appendDNKey gives
+// for ldap.ParseDN(s) -- and reports whether s is a DN naming something: it
+// parses and has at least one RDN.
+//
+// A plain DN is keyed from its bytes, without go-ldap's parse tree (about 27
+// allocations for a four-RDN DN): single-valued RDNs, types of letters, digits,
+// '-' and '.', values of letters, digits and "_.-@" only -- no escape, quote,
+// space, '#', '+', ';' or non-ASCII byte, which are the ones ParseDN
+// interprets. Every other DN takes the full parse, so the answer never
+// differs; FuzzPlainDNKey holds that.
+func appendKeyOf(dst []byte, s string) ([]byte, bool) {
+	if k, ok := appendPlainKey(dst, s); ok {
+		return k, true
+	}
+	dn, err := ldap.ParseDN(s)
+	if err != nil || len(dn.RDNs) == 0 {
+		return dst, false
+	}
+	return appendDNKey(dst, dn), true
+}
+
+// appendPlainKey is appendKeyOf for a plain DN only; ok is false, and dst
+// unchanged, for any other.
+func appendPlainKey(dst []byte, s string) (out []byte, ok bool) {
+	n := len(dst)
+	if s == "" {
+		return dst, false
+	}
+	for len(s) > 0 {
+		rdn := s
+		s = ""
+		if i := indexByte(rdn, ','); i >= 0 {
+			rdn, s = rdn[:i], rdn[i+1:]
+			if s == "" { // a trailing comma is not a DN
+				return dst[:n], false
+			}
+		}
+		eq := indexByte(rdn, '=')
+		if eq <= 0 || eq == len(rdn)-1 || !plain(rdn[:eq], true) || !plain(rdn[eq+1:], false) {
+			return dst[:n], false
+		}
+		dst = binary.AppendUvarint(dst, 1)
+		dst = appendField(appendField(dst, rdn[:eq]), rdn[eq+1:])
+	}
+	return dst, true
+}
+
+func indexByte(s string, c byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// plain says every byte of s is one ParseDN passes through unchanged.
+func plain(s string, isType bool) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-':
+		case c == '.' || (!isType && (c == '_' || c == '@')):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // appendField appends canon(s), escaped, and a terminating 0.
 func appendField(dst []byte, s string) []byte {
 	for _, r := range s { // an invalid byte is U+FFFD, as strings.EqualFold reads it

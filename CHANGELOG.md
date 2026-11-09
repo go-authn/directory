@@ -3,6 +3,20 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
+## Unreleased
+
+- **`ldapdir` searches are paged** (RFC 2696, `PageSize` / `page_size`, default
+  500; negative = no control), so a server that caps an unpaged answer (Active
+  Directory: 1000) can be read in full. A server that ignores the control
+  answers in one piece, as before.
+- **No `ldap.ParseDN` for a plain DN.** The people index and member DNs are
+  keyed from the bytes of a DN made of single-valued RDNs of plain characters
+  (0 allocations instead of 32); any other DN takes the full parse, and a fuzz
+  test holds the keys equal. `BenchmarkRefresh` (10,000 people, 2,000 groups
+  of 50): 7.18 M -> 6.65 M allocations, 460 -> 451 MiB. The rest is
+  asn1-ber (client 47 %, the in-process test server 45 %), not this module
+  (go-authn/directory#42).
+
 ## v0.21.0 — 2026-11-08
 
 - **`Set.GroupNames` reports the sources that failed.** It returns the names

@@ -15,7 +15,7 @@ func openLDAP(b Block) (directory.Source, error) {
 		URL: b.URL, BaseDN: b.BaseDN, BindDN: b.BindDN,
 		UserFilter: b.UserFilter, UserAttribute: b.UserAttribute,
 		GroupBaseDN: b.GroupBaseDN, GroupFilter: b.GroupFilter,
-		GroupAttribute: b.GroupAttribute, MemberAttribute: b.MemberAttribute,
+		GroupAttribute: b.GroupAttribute, MemberAttribute: b.MemberAttribute, PageSize: b.PageSize,
 		TOTPAttribute: b.TOTPAttribute,
 		Attributes:    b.Attributes, GroupAttributes: b.GroupAttributes,
 		ObjectClasses: b.ObjectClasses, GroupObjectClasses: b.GroupObjectClasses,

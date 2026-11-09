@@ -120,6 +120,14 @@ type Config struct {
 	// or naming nobody imported, maps to nobody: see [Source.Members].
 	MemberAttribute string
 
+	// PageSize is the page of the Simple Paged Results control (RFC 2696)
+	// that every search of many entries asks for, so that a server which caps
+	// an unpaged answer (Active Directory's MaxPageSize is 1000) does not
+	// refuse a large directory, and no page is bigger than this many entries.
+	// 0 means 500; a negative value sends no control. A server that ignores
+	// the control answers in one piece, as before.
+	PageSize int
+
 	// TLS is used for ldaps:// and for StartTLS. A nil one means TLS 1.2 and
 	// the system roots, which is the right default and the one a caller
 	// overrides to pin a private CA.
@@ -365,6 +373,18 @@ func (s *Source) dial() (*ldap.Conn, error) {
 	return c, nil
 }
 
+// search is c.Search, paged (RFC 2696) unless PageSize is negative.
+func (s *Source) search(c *ldap.Conn, req *ldap.SearchRequest) (*ldap.SearchResult, error) {
+	n := s.cfg.PageSize
+	if n < 0 {
+		return c.Search(req)
+	}
+	if n == 0 {
+		n = 500
+	}
+	return c.SearchWithPaging(req, uint32(n))
+}
+
 // Identities reads everybody under the base DN.
 func (s *Source) Identities() ([]*directory.Identity, error) {
 	c, err := s.dial()
@@ -373,7 +393,7 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 	}
 	defer c.Close()
 
-	res, err := c.Search(ldap.NewSearchRequest(
+	res, err := s.search(c, ldap.NewSearchRequest(
 		s.cfg.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
 		s.cfg.UserFilter,
 		s.attributes(),
@@ -585,7 +605,7 @@ func (s *Source) GroupNames() ([]string, error) {
 	}
 	defer c.Close()
 
-	res, err := c.Search(ldap.NewSearchRequest(
+	res, err := s.search(c, ldap.NewSearchRequest(
 		s.cfg.GroupBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
 		s.cfg.GroupFilter, []string{s.cfg.GroupAttribute}, nil,
 	))
@@ -657,7 +677,7 @@ func (s *Source) Members(group string) ([]string, error) {
 						return nil, err
 					}
 				}
-				if name, ok := whoIs(people, dn); ok {
+				if name, ok := people[dn]; ok && dn != "" {
 					add(name)
 				}
 			}
@@ -690,7 +710,7 @@ func (s *Source) ReadGroups() (map[string]directory.GroupData, error) {
 			want = append(want, a)
 		}
 	}
-	res, err := c.Search(ldap.NewSearchRequest(
+	res, err := s.search(c, ldap.NewSearchRequest(
 		s.cfg.GroupBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
 		s.cfg.GroupFilter, want, nil,
 	))
@@ -752,7 +772,9 @@ func (s *Source) ReadGroups() (map[string]directory.GroupData, error) {
 								}
 							}
 							m.isDN = true
-							m.name, m.mapped = whoIs(people, dn)
+							if dn != "" {
+								m.name, m.mapped = people[dn]
+							}
 						}
 						whom[key] = m
 					}
@@ -797,19 +819,19 @@ func (s *Source) memberAttributes() []string {
 // (RFC 2307), and by default is taken as written. A configured
 // MemberAttribute of another type is somebody else's layout, so a value of it
 // is a DN when it parses as one -- and then goes through the same mapping.
-func (s *Source) memberDN(a, v string) (*ldap.DN, bool) {
+//
+// The DN comes back as its key (dnKey), "" for a DN that names nobody.
+func (s *Source) memberDN(a, v string) (key string, isDN bool) {
 	dnSyntax := strings.EqualFold(a, "member") || strings.EqualFold(a, "uniqueMember")
 	if !dnSyntax && s.cfg.MemberAttribute == "" {
-		return nil, false
+		return "", false
 	}
-	dn, err := ldap.ParseDN(v)
-	if err != nil || len(dn.RDNs) == 0 {
-		if dnSyntax {
-			return &ldap.DN{}, true
-		}
-		return nil, false
+	var buf [160]byte
+	k, ok := appendKeyOf(buf[:0], v)
+	if !ok {
+		return "", dnSyntax
 	}
-	return dn, true
+	return string(k), true
 }
 
 // people are the people the search imported: their names, by the DN each was
@@ -821,7 +843,7 @@ type peopleIndex map[string]string
 // imported is the people this source imports, as Identities reads them: the
 // same base, filter and naming attribute.
 func (s *Source) imported(c *ldap.Conn) (peopleIndex, error) {
-	res, err := c.Search(ldap.NewSearchRequest(
+	res, err := s.search(c, ldap.NewSearchRequest(
 		s.cfg.BaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
 		s.cfg.UserFilter, []string{s.cfg.UserAttribute}, nil,
 	))
@@ -831,14 +853,13 @@ func (s *Source) imported(c *ldap.Conn) (peopleIndex, error) {
 	out := make(peopleIndex, len(res.Entries))
 	for _, e := range res.Entries {
 		name := e.GetAttributeValue(s.cfg.UserAttribute)
-		dn, err := ldap.ParseDN(e.DN)
-		if name == "" || err != nil {
+		var buf [160]byte
+		k, ok := appendKeyOf(buf[:0], e.DN)
+		if name == "" || !ok {
 			continue
 		}
 		// The first person returned under a DN keeps it, as the linear search
 		// this replaced answered with the first match.
-		var buf [160]byte
-		k := appendDNKey(buf[:0], dn)
 		if _, dup := out[string(k)]; !dup {
 			out[string(k)] = name
 		}
