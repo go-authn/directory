@@ -297,6 +297,7 @@ the program that uses this, `nosql` is usually the biggest single lever it has
 | `group_filter` / `GroupFilter` | `(\|(objectClass=posixGroup)(objectClass=groupOfNames))` — `ldapdir.DefaultGroupFilter` |
 | `group_attribute` / `GroupAttribute` | `cn` |
 | `group_member_attribute` / `MemberAttribute` | none: `memberUid` (names) **and** `member` (DNs); set, it is the one attribute read |
+| `page_size` / `PageSize` | `500`: every search of many entries is paged (RFC 2696); a negative value sends no control |
 
 The three classes are the standard ones that carry a `uid`: `posixAccount`
 (RFC 2307, a person with a uidNumber, gidNumber and home directory), `account`
