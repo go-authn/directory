@@ -1,6 +1,6 @@
 module github.com/go-authn/directory
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/glauth/ldap v0.0.0-20260718202943-34c5f9b3cbf1
