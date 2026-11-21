@@ -3,6 +3,29 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
+## v0.24.0
+
+Security fixes to `ldapdir` (2026-11-21 audit). Needs go-authn/ldap v0.14.0.
+
+- **Two uids that `caseIgnoreMatch` equates are one name.** The ambiguity check
+  of v0.18.0 lower-cased the names, so "alice" and "alice " (trailing space),
+  "al ice" and "al  ice", a fullwidth "ａlice", "ſam" and "sam", or a name with
+  a soft hyphen were two people and `Identities` returned both. The key is now
+  the attribute's equality key from the standard schema
+  (`schema.Schema.EqualityKey`, RFC 4518 preparation), so they are
+  `ErrAmbiguous`. Upgrade: a directory with such pairs now fails to load until
+  one entry is corrected. A `UserAttribute` the standard schema does not know
+  keeps the lower-casing.
+- **The certificate is verified against the host of the URL.** `ldapdir` now
+  sets `tls.Config.ServerName` from the URL (the caller's configuration is
+  copied, not changed; an explicit ServerName still wins). With
+  go-authn/ldap v0.14.0 this also fixes StartTLS, which verified the peer's IP
+  address instead.
+- Not changed: `Set.Identities` still compares names byte for byte, and across
+  sources the first one that knows a name owns it (v0.18.0, deliberate: a local
+  file overrides a directory). A name that differs only by case in two sources
+  is two people to the Set.
+
 ## v0.23.0
 
 - **`ldapdir` reads through go-authn/ldap's own client** (`ldap.Dial`,

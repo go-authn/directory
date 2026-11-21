@@ -38,7 +38,39 @@ import (
 
 	"github.com/go-authn/directory"
 	ldap "github.com/go-authn/ldap"
+	"github.com/go-authn/ldap/schema"
 )
+
+// prepareTLS is the TLS configuration to dial with: the caller's, copied (it is
+// not ours to change), or TLS 1.2 and the system roots, with the certificate
+// verified against the name the URL was written with. That is stated here
+// rather than left to whoever dials: a verification against the peer's IP
+// address is a verification against nothing the operator chose.
+func prepareTLS(rawurl string, own *tls.Config) *tls.Config {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if own != nil {
+		cfg = own.Clone()
+	}
+	if cfg.ServerName == "" {
+		if u, err := url.Parse(rawurl); err == nil && (u.Scheme == "ldap" || u.Scheme == "ldaps") {
+			cfg.ServerName = or(u.Hostname(), "localhost")
+		}
+	}
+	return cfg
+}
+
+// nameKey is the key two names share exactly when the attribute's equality rule
+// calls them equal. An attribute the standard schema does not know, or a value
+// the rule cannot prepare, falls back to a lower-casing under a prefix no
+// prepared key has (preparation removes NUL): the fallback never claims two
+// names are the same when the rule would say they differ, and no key of one kind
+// meets a key of the other.
+func nameKey(s *schema.Schema, t *schema.AttributeType, name string) string {
+	if key, ok := s.EqualityKey(t, []byte(name)); ok {
+		return key
+	}
+	return "\x00" + strings.ToLower(name)
+}
 
 // Config is where the directory is and how it is laid out.
 //
@@ -204,9 +236,7 @@ func New(cfg Config) (*Source, error) {
 	if err := cleartext(cfg.URL, cfg.StartTLS); err != nil {
 		return nil, err
 	}
-	if cfg.TLS == nil {
-		cfg.TLS = &tls.Config{MinVersion: tls.VersionTLS12}
-	}
+	cfg.TLS = prepareTLS(cfg.URL, cfg.TLS)
 	cfg.UserFilter = or(cfg.UserFilter, DefaultUserFilter)
 	cfg.UserAttribute = or(cfg.UserAttribute, "uid")
 	cfg.GroupBaseDN = or(cfg.GroupBaseDN, cfg.BaseDN)
@@ -420,7 +450,9 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 		return nil, fail(fmt.Errorf("ldapdir: searching for people: %w", err))
 	}
 	out := make([]*directory.Identity, 0, len(entries))
-	byName := make(map[string]string, len(entries)) // lower-cased name -> DN
+	byName := make(map[string]string, len(entries)) // equality key of the name -> DN
+	std := schema.Standard()
+	nameType := std.AttributeType(s.cfg.UserAttribute)
 	for _, e := range entries {
 		name := first(e, s.cfg.UserAttribute)
 		if name == "" {
@@ -429,10 +461,12 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 			continue
 		}
 		// uid is caseIgnoreMatch (RFC 4519 §2.39): "alice" and "Alice" are one
-		// name. Two entries under one name are two people nobody can tell
-		// apart, and picking the first would hand one of them the other's
-		// groups, keys and password check.
-		key := strings.ToLower(name)
+		// name, and so are "alice" and "alice " (RFC 4518 prepares a string:
+		// compatibility folding, space compression, characters mapped to
+		// nothing), which a lower-casing does not see. Two entries under one
+		// name are two people nobody can tell apart, and picking the first
+		// would hand one of them the other's groups, keys and password check.
+		key := nameKey(std, nameType, name)
 		if first, dup := byName[key]; dup {
 			return nil, fmt.Errorf("ldapdir: %w: %q is held by %s and %s", directory.ErrAmbiguous, name, first, e.DN)
 		}
