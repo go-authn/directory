@@ -21,8 +21,8 @@ func openLDAP(b Block) (directory.Source, error) {
 		ObjectClasses: b.ObjectClasses, GroupObjectClasses: b.GroupObjectClasses,
 		StartTLS: b.StartTLS,
 	}
-	if b.BindPasswordFile != "" {
-		pw, err := secretFile(b.BindPasswordFile, "the bind password")
+	if b.BindPasswordFile != "" || b.BindPasswordFrom != "" {
+		pw, err := resolveFrom("users \"ldap\"", "bind_password", b.BindPasswordFile, b.BindPasswordFrom)
 		if err != nil {
 			return nil, err
 		}

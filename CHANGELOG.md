@@ -3,6 +3,32 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
+## v0.27.0
+
+**`hcldir` takes secret references for every secret-bearing field.** Refs #63.
+
+- **New fields**, each a go-authn/secretsource v0.9.0 reference
+  (`systemd-creds:NAME`, `file:PATH`, `keychain:...`; one non-empty line, 4096
+  bytes at most): `dsn_from` (`users "sql"`; the whole DSN is one secret),
+  `bind_password_from` (`users "ldap"`), `password_from`, `totp_secret_from` and
+  `nt_hash_from` (`user`). `nt_hash_from` only moves the existing `nt_hash` out of
+  plaintext.
+- **Old spellings are deprecated aliases.** `dsn_file`, `bind_password_file` and
+  `password_file` mean `..._from = "file:PATH"`; `password`, `nt_hash` and
+  `totp_secret` (the secret itself in the configuration) still work.
+  `UserBlock.Deprecations()` and `Block.Deprecations()` return one sentence per
+  deprecated spelling in use, never holding a secret, for the caller to log.
+- **Two spellings of one secret is refused**, naming the field. A block with
+  no `dsn_from` and no `dsn_file` says `a dsn_from is needed`.
+- **Behaviour change for the `*_file` fields**: they now go through
+  secretsource's `file:`, which refuses a symlink, a file owned by another user
+  and one longer than 4096 bytes (it was `os.ReadFile`), strips ONE trailing
+  newline instead of all surrounding whitespace, and refuses a secret that is
+  empty or has a NUL or a second line. Errors read `<who>: <field>_from: ...`.
+- `SetPassword` refuses a user whose block has `password_from` or `nt_hash_from`:
+  it cannot write through a reference nor recompute a referenced hash.
+- Adds the dependency go-authn/secretsource v0.9.0.
+
 ## v0.26.0
 
 **Breaking (below v1): a `Set` compares names by ONE equivalence relation,

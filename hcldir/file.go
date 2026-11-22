@@ -17,9 +17,8 @@ import (
 // rather than in a database or an LDAP server:
 //
 //	user "alice" {
-//	  password_file        = "/etc/authnd/alice.pw"
-//	  nt_hash              = "8846f7eaee8fb117ad06bdd830b7586c"
-//	  totp_secret          = "JBSWY3DPEHPK3PXP"
+//	  password_from        = "systemd-creds:alice-pw"
+//	  totp_secret_from     = "systemd-creds:alice-totp"
 //	  authorized_keys_file = "/etc/authnd/alice.keys"
 //	}
 //
@@ -33,19 +32,32 @@ import (
 type UserBlock struct {
 	Name string `hcl:"name,label"`
 
-	// Password is the secret itself; PasswordFile reads it from a file, which
-	// is how a deployment keeps it out of the configuration and out of a
-	// backup of it. Give one or neither, never both.
+	// PasswordFrom is a go-authn/secretsource reference to the password
+	// ("systemd-creds:alice", "file:/etc/authnd/alice.pw", ...): the way to
+	// write it, so the configuration holds no secret.
+	//
+	// PasswordFile is the DEPRECATED spelling of password_from = "file:PATH",
+	// and Password, the secret itself written in the configuration, is
+	// deprecated too: see [UserBlock.Deprecations]. Give one of the three,
+	// never two: the error names the field.
+	PasswordFrom string `hcl:"password_from,optional"`
 	Password     string `hcl:"password,optional"`
 	PasswordFile string `hcl:"password_file,optional"`
 
 	// NTHash is MD4(UTF16LE(password)), in the 32 hex characters a directory
 	// publishes it as -- for a site that holds THAT and not the password.
-	NTHash string `hcl:"nt_hash,optional"`
+	// NTHashFrom is a reference to it, and the inline spelling is deprecated;
+	// give one. It moves an existing field out of the configuration, and
+	// nothing else.
+	NTHashFrom string `hcl:"nt_hash_from,optional"`
+	NTHash     string `hcl:"nt_hash,optional"`
 
 	// TOTPSecret is the base32 secret behind this person's one-time codes.
 	// ⛔ It IS the second factor: whoever holds it produces every future code.
-	TOTPSecret string `hcl:"totp_secret,optional"`
+	// TOTPSecretFrom is a reference to it, and the inline spelling is
+	// deprecated; give one.
+	TOTPSecretFrom string `hcl:"totp_secret_from,optional"`
+	TOTPSecret     string `hcl:"totp_secret,optional"`
 
 	// AuthorizedKeys are this person's SSH public keys, written the way an
 	// authorized_keys file writes them, either inline or in a file.
@@ -99,9 +111,10 @@ type GroupBlock struct {
 // written in the configuration file. Describe() answers "the configuration
 // file", which is the example the Source interface itself gives.
 //
-// Both a password and a password_file is refused rather than resolved. Two
-// spellings of one secret is a question about which one wins, and a
-// configuration that answers it silently is one a reader cannot check.
+// Two spellings of one secret -- a password and a password_file, a totp_secret
+// and a totp_secret_from -- are refused rather than resolved. Two spellings of
+// one secret is a question about which one wins, and a configuration that
+// answers it silently is one a reader cannot check.
 func File(users []UserBlock, groups []GroupBlock) (directory.Source, error) {
 	const where = "the configuration file"
 	src := &directory.Static{Name: where, Groups: map[string][]string{},
@@ -130,22 +143,31 @@ func File(users []UserBlock, groups []GroupBlock) (directory.Source, error) {
 		seen[u.Name] = true
 
 		opts := []directory.Option{directory.From(where)}
-		pw, err := userSecret(u)
+		who := fmt.Sprintf("user %q", u.Name)
+		pw, err := resolveSecret(who, "password", u.Password, u.PasswordFile, u.PasswordFrom)
 		if err != nil {
 			return nil, err
 		}
 		if pw != "" {
 			opts = append(opts, directory.WithPassword(pw))
 		}
-		if u.NTHash != "" {
-			h, err := directory.ParseNTHash(u.NTHash)
+		nt, err := resolveSecret(who, "nt_hash", u.NTHash, "", u.NTHashFrom)
+		if err != nil {
+			return nil, err
+		}
+		if nt != "" {
+			h, err := directory.ParseNTHash(nt)
 			if err != nil {
 				return nil, fmt.Errorf("user %q: %w", u.Name, err)
 			}
 			opts = append(opts, directory.WithNTHash(h))
 		}
-		if u.TOTPSecret != "" {
-			s, err := directory.ParseTOTPSecret(u.TOTPSecret)
+		totp, err := resolveSecret(who, "totp_secret", u.TOTPSecret, "", u.TOTPSecretFrom)
+		if err != nil {
+			return nil, err
+		}
+		if totp != "" {
+			s, err := directory.ParseTOTPSecret(totp)
 			if err != nil {
 				return nil, fmt.Errorf("user %q: %w", u.Name, err)
 			}
@@ -170,19 +192,6 @@ func File(users []UserBlock, groups []GroupBlock) (directory.Source, error) {
 		src.People = append(src.People, directory.NewIdentity(u.Name, opts...))
 	}
 	return src, nil
-}
-
-// userSecret reads the password from the block or from its file, refusing
-// both.
-func userSecret(u UserBlock) (string, error) {
-	switch {
-	case u.Password != "" && u.PasswordFile != "":
-		return "", fmt.Errorf("user %q: give password or password_file, not both", u.Name)
-	case u.PasswordFile != "":
-		return secretFile(u.PasswordFile, "user "+u.Name)
-	default:
-		return u.Password, nil
-	}
 }
 
 // AuthorizedKeys is this person's keys, from the block or from the file it

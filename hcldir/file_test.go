@@ -82,7 +82,7 @@ func TestPasswordAndPasswordFileTogetherIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("both a password and a password_file were accepted")
 	}
-	if !strings.Contains(err.Error(), "not both") {
+	if !strings.Contains(err.Error(), "give only one of password, password_file and password_from") {
 		t.Errorf("the refusal should say which to give: %v", err)
 	}
 	// And the file alone works, trimmed.

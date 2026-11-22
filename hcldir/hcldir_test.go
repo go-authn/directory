@@ -58,9 +58,9 @@ func TestBlocksThatCannotBeWhatTheySay(t *testing.T) {
 			"in the clear",
 		},
 		{
-			"a sql block with no dsn_file",
+			"a sql block with no dsn_from",
 			hcldir.Block{Kind: "sql", Driver: "sqlite", UsersQuery: "select 1"},
-			"a dsn_file is needed",
+			"a dsn_from is needed",
 		},
 		{
 			"a sql block with no query",
@@ -185,13 +185,13 @@ func TestASecretFileThatIsNotThere(t *testing.T) {
 	_, err := hcldir.Open(hcldir.Block{
 		Kind: "sql", Driver: "sqlite", DSNFile: "/no/such/dsn", UsersQuery: "select 1",
 	})
-	if err == nil || !strings.Contains(err.Error(), "the DSN file") {
+	if err == nil || !strings.Contains(err.Error(), "dsn_from") {
 		t.Errorf("%v, want one about the DSN file", err)
 	}
 	_, err = hcldir.Open(hcldir.Block{
 		Kind: "ldap", URL: "ldap://127.0.0.1:1", BaseDN: "dc=x", BindPasswordFile: "/no/such/pw",
 	})
-	if err == nil || !strings.Contains(err.Error(), "the bind password") {
+	if err == nil || !strings.Contains(err.Error(), "bind_password_from") {
 		t.Errorf("%v, want one about the bind password", err)
 	}
 }
