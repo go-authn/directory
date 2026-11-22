@@ -266,6 +266,7 @@ func write(t *testing.T, name, body string) string {
 	if err := os.WriteFile(p, []byte(body+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	ownerOnly(t, p)
 	return p
 }
 

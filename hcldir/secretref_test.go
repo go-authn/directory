@@ -22,6 +22,7 @@ func secret(t *testing.T, name string, content []byte) string {
 	if err := os.WriteFile(p, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	ownerOnly(t, p)
 	return p
 }
 

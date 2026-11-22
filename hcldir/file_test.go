@@ -78,6 +78,7 @@ func TestPasswordAndPasswordFileTogetherIsRefused(t *testing.T) {
 	if err := os.WriteFile(p, []byte("fromfile\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	ownerOnly(t, p)
 	_, err := hcldir.File([]hcldir.UserBlock{{Name: "alice", Password: "inline", PasswordFile: p}}, nil)
 	if err == nil {
 		t.Fatal("both a password and a password_file were accepted")
