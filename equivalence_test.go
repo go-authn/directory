@@ -98,6 +98,10 @@ func TestNameKeyFailureRefusesTheName(t *testing.T) {
 	if _, err := Expand([]string{"alice", "\xff\xfe"}, set); !errors.Is(err, ErrBadName) {
 		t.Errorf("Expand: %v, want ErrBadName", err)
 	}
+	// a bad name arriving through a group, from a source that is not a Set
+	if _, err := Expand([]string{"@g"}, src); !errors.Is(err, ErrBadName) {
+		t.Errorf("Expand of a group with a bad member: %v, want ErrBadName", err)
+	}
 }
 
 func TestSetShadowsLaterCaseVariantAndReportsIt(t *testing.T) {
