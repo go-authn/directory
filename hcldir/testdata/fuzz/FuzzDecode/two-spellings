@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("users \"sql\" {\n driver = \"sqlite\"\n dsn_file = \"/d\"\n dsn_from = \"file:/d\"\n users = \"select 1\"\n}\nusers \"ldap\" {\n url = \"ldap://x\"\n bind_password_file = \"/p\"\n bind_password_from = \"keychain:a/b\"\n}\nuser \"bob\" {\n password = \"x\"\n password_from = \"file:/p\"\n nt_hash = \"8846f7eaee8fb117ad06bdd830b7586c\"\n totp_secret = \"JBSWY3DPEHPK3PXP\"\n}\n")

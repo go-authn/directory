@@ -189,7 +189,7 @@ here once:
 ```hcl
 users "sql" {
   driver   = "postgres"               # or sqlite, or mysql
-  dsn_file = "/etc/authnd/dsn"        # a DSN holds a password: it lives in a file
+  dsn_from = "systemd-creds:authnd-dsn"   # a DSN holds a password: a secret reference, never the DSN
   users    = "select login, null, nt_hash, ssh_keys from staff"   # by position: name, password, nt_hash, ssh_keys, totp_secret
   groups   = "select team, member from team_members"
 
@@ -206,13 +206,13 @@ users "ldap" {
   url                = "ldaps://ldap.example.org"
   base_dn            = "ou=people,dc=example,dc=org"
   bind_dn            = "cn=reader,dc=example,dc=org"
-  bind_password_file = "/etc/authnd/bind.pw"
+  bind_password_from = "systemd-creds:authnd-bind"
   attributes         = ["mail", "uidNumber", "homeDirectory"]   # copied from each person's entry
   group_attributes   = ["gidNumber"]                            # and from each group's
 }
 
 user "alice" {
-  password_file = "/etc/authnd/alice.pw"
+  password_from    = "systemd-creds:alice-pw"      # or "file:PATH"; totp_secret_from, nt_hash_from likewise
   attributes = {
     uidNumber     = "1000"                  # a string: LDAP values are strings
     homeDirectory = "/home/alice"
@@ -228,6 +228,21 @@ group "staff" {
   object_classes = ["supannGroupe"]
 }
 ```
+
+**Secrets are references.** `dsn_from` (the whole DSN is one secret),
+`bind_password_from`, `password_from`, `totp_secret_from` and `nt_hash_from`
+take a [secretsource](https://github.com/go-authn/secretsource) reference:
+`systemd-creds:NAME` (`LoadCredentialEncrypted=` with `systemd-creds encrypt
+--with-key=host+tpm2`), `file:PATH` (a regular file of the current user, never a
+symlink), `keychain:SERVICE/ACCOUNT`, … One line, 4096 bytes at most. Each is
+exclusive with its old spelling, and giving two is refused, naming the field.
+`dsn_file`, `bind_password_file` and `password_file` are the **deprecated**
+spelling of `…_from = "file:PATH"`; `password`, `nt_hash` and `totp_secret`
+written in the configuration still work and are deprecated too.
+`UserBlock.Deprecations` and `Block.Deprecations` list them, one sentence each
+and never a secret, for the caller to log. `SetPassword` does not write through
+a `password_from`, and refuses a user holding an `nt_hash_from` (the hash could
+not be recomputed).
 
 **`object_classes`** (and `group_object_classes` in a `users` block) are
 checked by `Block.Check` and `File` before anything connects, and a refusal

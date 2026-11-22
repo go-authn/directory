@@ -30,7 +30,7 @@ func openSQL(b Block) (directory.Source, error) {
 	if err != nil {
 		return nil, err
 	}
-	dsn, err := secretFile(b.DSNFile, "the DSN file")
+	dsn, err := resolveFrom("users \"sql\"", "dsn", b.DSNFile, b.DSNFrom)
 	if err != nil {
 		return nil, err
 	}

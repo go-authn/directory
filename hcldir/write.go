@@ -77,6 +77,25 @@ func writePassword(path string, f *hclwrite.File, blk *hclwrite.Block, name, pas
 	fileAttr := body.GetAttribute("password_file")
 	hasInline := body.GetAttribute("password") != nil
 	hasHash := body.GetAttribute("nt_hash") != nil
+	hashFrom := body.GetAttribute("nt_hash_from") != nil
+
+	// ⛔ A password named by a reference is somebody else's to change: a
+	// systemd credential is sealed and read-only, and a file: reference could
+	// be written but need not be where this package would guess. Refused, and
+	// the person is told which spelling to use instead -- password_file, which
+	// this package writes through, or the manager that holds the secret.
+	if body.GetAttribute("password_from") != nil {
+		return fmt.Errorf("user %q: the password is a secret reference (password_from), "+
+			"which this package does not write through: change the secret where it is held", name)
+	}
+	// ⛔ The same argument as nt_hash below, and worse: a hash named by a
+	// reference cannot be recomputed here, so the new password would open
+	// everything but SMB, and nothing would report it.
+	if hashFrom {
+		return fmt.Errorf("user %q holds an nt_hash_from: a hash named by a reference "+
+			"cannot be recomputed here, so a new password would leave it disagreeing "+
+			"with the password: change both where they are held", name)
+	}
 
 	// ⛔ A person holding only an nt_hash cannot be given a password here
 	// without changing WHAT PROVES THEM: the block would start answering S3

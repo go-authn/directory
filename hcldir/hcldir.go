@@ -5,7 +5,7 @@
 //
 //	users "sql" {
 //	  driver   = "postgres"
-//	  dsn_file = "/etc/authnd/dsn"
+//	  dsn_from = "systemd-creds:authnd-dsn"
 //	  users    = "select login, nt_hash, ssh_keys from staff"
 //	  groups   = "select team, member from team_members"
 //
@@ -22,7 +22,7 @@
 //	  url                = "ldaps://ldap.example.org"
 //	  base_dn            = "ou=people,dc=example,dc=org"
 //	  bind_dn            = "cn=reader,dc=example,dc=org"
-//	  bind_password_file = "/etc/authnd/bind.pw"
+//	  bind_password_from = "systemd-creds:authnd-bind"
 //	  attributes         = ["mail", "uidNumber", "homeDirectory"]
 //	  group_attributes   = ["gidNumber"]
 //	}
@@ -40,20 +40,22 @@
 // said "no HCL library" until a README audit ran go list), and for the
 // hcl.Range fields gohcl fills in so that an error can name a line.
 //
-// # Secrets come from files
+// # Secrets are references
 //
-// A DSN and a bind password hold secrets, so they are named by a path and read
-// here. Nothing takes one inline, and an LDAP url carrying credentials is
-// refused rather than redacted: this url is printed by [directory.Set.Describe]
-// and by every error underneath, and redaction would be a promise every one of
-// those lines has to keep.
+// A DSN and a bind password hold secrets, so they are named by a
+// go-authn/secretsource reference -- dsn_from, bind_password_from; the same
+// goes for a user's password_from, nt_hash_from and totp_secret_from -- and
+// resolved here. dsn_file and bind_password_file are the deprecated spelling
+// of "file:PATH". Nothing takes a DSN or a bind password inline, and an LDAP
+// url carrying credentials is refused rather than redacted: this url is printed
+// by [directory.Set.Describe] and by every error underneath, and redaction
+// would be a promise every one of those lines has to keep.
 package hcldir
 
 import (
 	"fmt"
 	"net"
 	"net/url"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -72,7 +74,13 @@ type Block struct {
 	Kind string `hcl:"kind,label"`
 
 	// sql.
-	Driver      string `hcl:"driver,optional"`
+	Driver string `hcl:"driver,optional"`
+	// DSNFrom is a secretsource reference to the DSN, which is ONE secret as
+	// a whole: injecting a separate password into a driver-specific DSN would
+	// need a per-driver parser, and a parse bug would leak or corrupt it.
+	// DSNFile is the deprecated spelling of dsn_from = "file:PATH". One of the
+	// two is needed, never both.
+	DSNFrom     string `hcl:"dsn_from,optional"`
 	DSNFile     string `hcl:"dsn_file,optional"`
 	UsersQuery  string `hcl:"users,optional"`
 	GroupsQuery string `hcl:"groups,optional"`
@@ -87,8 +95,12 @@ type Block struct {
 	QueryTimeout string `hcl:"query_timeout,optional"`
 
 	// ldap.
-	URL              string `hcl:"url,optional"`
-	BindDN           string `hcl:"bind_dn,optional"`
+	URL    string `hcl:"url,optional"`
+	BindDN string `hcl:"bind_dn,optional"`
+	// BindPasswordFrom is a secretsource reference to the bind password;
+	// BindPasswordFile is the deprecated spelling of
+	// bind_password_from = "file:PATH". Give one, never both.
+	BindPasswordFrom string `hcl:"bind_password_from,optional"`
 	BindPasswordFile string `hcl:"bind_password_file,optional"`
 	BaseDN           string `hcl:"base_dn,optional"`
 	// UserFilter defaults to ldapdir.DefaultUserFilter,
@@ -180,12 +192,16 @@ func (b Block) Check() error {
 	case "sql":
 		if bad := named(map[string]string{"url": b.URL, "bind_dn": b.BindDN,
 			"base_dn": b.BaseDN, "bind_password_file": b.BindPasswordFile,
-			"attributes":       strings.Join(b.Attributes, ","),
+			"bind_password_from": b.BindPasswordFrom, "attributes": strings.Join(b.Attributes, ","),
 			"group_attributes": strings.Join(b.GroupAttributes, ",")}); bad != "" {
 			return fmt.Errorf(`users "sql" has %s in it, which belongs to an ldap block`, bad)
 		}
-		if b.DSNFile == "" {
-			return fmt.Errorf("a dsn_file is needed: a DSN holds a password, so it lives in a file and not on a command line")
+		if b.DSNFile == "" && b.DSNFrom == "" {
+			return fmt.Errorf("a dsn_from is needed: a DSN holds a password, so it is a secret reference " +
+				`("systemd-creds:NAME", "file:PATH") and not written on a command line or in the configuration`)
+		}
+		if b.DSNFile != "" && b.DSNFrom != "" {
+			return fmt.Errorf(`users "sql": give only one of dsn_file and dsn_from (dsn_file is the deprecated spelling of dsn_from = "file:PATH")`)
 		}
 		if _, err := b.queryTimeout(); err != nil {
 			return err
@@ -194,7 +210,7 @@ func (b Block) Check() error {
 			return fmt.Errorf(`users "sql" has no query for the people: the queries are yours, because your people are already in your shape`)
 		}
 	case "ldap":
-		if bad := named(map[string]string{"driver": b.Driver, "dsn_file": b.DSNFile,
+		if bad := named(map[string]string{"driver": b.Driver, "dsn_file": b.DSNFile, "dsn_from": b.DSNFrom,
 			"users_attributes": b.UsersAttributesQuery, "groups_attributes": b.GroupsAttributesQuery,
 			"query_timeout": b.QueryTimeout}); bad != "" {
 			return fmt.Errorf(`users "ldap" has %s in it, which belongs to a sql block`, bad)
@@ -216,7 +232,10 @@ func (b Block) Check() error {
 		// whatever collects that output. Refused, and the refusal does not
 		// quote the url either.
 		if u, err := url.Parse(b.URL); err == nil && u.User != nil {
-			return fmt.Errorf(`users "ldap" has credentials in its url, and a url is printed: use bind_dn with bind_password_file`)
+			return fmt.Errorf(`users "ldap" has credentials in its url, and a url is printed: use bind_dn with bind_password_from`)
+		}
+		if b.BindPasswordFile != "" && b.BindPasswordFrom != "" {
+			return fmt.Errorf(`users "ldap": give only one of bind_password_file and bind_password_from (bind_password_file is the deprecated spelling of bind_password_from = "file:PATH")`)
 		}
 		if err := cleartextLDAP(b.URL, b.StartTLS); err != nil {
 			return fmt.Errorf(`users "ldap" %w`, err)
@@ -272,16 +291,6 @@ func OpenAll(blocks []Block) ([]directory.Source, error) {
 		out = append(out, src)
 	}
 	return out, nil
-}
-
-// secretFile reads a file holding one secret, which is how every secret gets
-// in here: never a field, never a flag, never an environment variable.
-func secretFile(path, what string) (string, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", what, err)
-	}
-	return strings.TrimSpace(string(raw)), nil
 }
 
 // named is the fields of these that were written, for a message that says
