@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("user \"carol\" {\n attributes = { mail = [\"a@x\"], uidNumber = \"1\" }\n object_classes = [\"eduPerson\"]\n authorized_keys = [\"not a key\"]\n}\ngroup \"staff\" {\n members = [\"alice\"]\n attributes = { gidNumber = \"100\" }\n}\n")
