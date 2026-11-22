@@ -3,6 +3,23 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
+## v0.25.0
+
+Security fixes to `ldapdir` (2026-11-21 audit). Needs go-authn/ldap v0.15.0.
+
+- **Every uid value of an entry is a name.** `Identities` looked only at the
+  first value: an entry holding "bob" beside "alice" and the entry that is bob
+  were two people under one name, and went unnoticed. Values are a set (RFC 4511
+  4.1.7) and `(uid=bob)` finds both, so any collision between values of
+  different entries, by `caseIgnoreMatch`, is now `ErrAmbiguous`. One value
+  repeated within one entry is not a collision. The identity is still named by
+  the first value, which the directory chooses.
+- **An entry with no DN is refused.** Its password check would be a bind with an
+  empty name and a password, which a server may answer Success to as the
+  anonymous association. `Identities` now returns an error.
+- go-authn/ldap v0.15.0 answers a bind with a name and an empty password
+  unwillingToPerform itself.
+
 ## v0.24.0
 
 Security fixes to `ldapdir` (2026-11-21 audit). Needs go-authn/ldap v0.14.0.

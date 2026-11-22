@@ -466,11 +466,34 @@ func (s *Source) Identities() ([]*directory.Identity, error) {
 		// nothing), which a lower-casing does not see. Two entries under one
 		// name are two people nobody can tell apart, and picking the first
 		// would hand one of them the other's groups, keys and password check.
-		key := nameKey(std, nameType, name)
-		if first, dup := byName[key]; dup {
-			return nil, fmt.Errorf("ldapdir: %w: %q is held by %s and %s", directory.ErrAmbiguous, name, first, e.DN)
+		//
+		// EVERY value of the attribute is a name, not only the first: values
+		// are a set (RFC 4511 4.1.7), (uid=bob) finds an entry that holds
+		// "bob" among others, and which value comes first is the directory's
+		// choice. The identity is named by the first value; the others only
+		// take part in the duplicate check.
+		//
+		// An entry with no DN is not somebody either: the password check is a
+		// bind as that DN, and a bind with an empty name and a password is
+		// what some servers answer Success to as the anonymous association.
+		if e.DN == "" {
+			return nil, fmt.Errorf("ldapdir: the directory returned an entry with no DN (%s=%q)", s.cfg.UserAttribute, name)
 		}
-		byName[key] = e.DN
+		own := map[string]bool{}
+		for _, v := range e.Attribute(s.cfg.UserAttribute).Values {
+			if len(v) == 0 {
+				continue
+			}
+			key := nameKey(std, nameType, string(v))
+			if own[key] {
+				continue // one value spelled twice in one entry
+			}
+			own[key] = true
+			if first, dup := byName[key]; dup {
+				return nil, fmt.Errorf("ldapdir: %w: %q is held by %s and %s", directory.ErrAmbiguous, string(v), first, e.DN)
+			}
+			byName[key] = e.DN
+		}
 		opts := []directory.Option{directory.From(s.cfg.URL)}
 		if h := first(e, "sambaNTPassword"); h != "" {
 			raw, err := directory.ParseNTHash(h)
