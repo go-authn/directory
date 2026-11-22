@@ -3,6 +3,34 @@
 Changes that a deployment has to know about, newest first. Earlier releases
 are described in their pull requests and release notes.
 
+## v0.26.0
+
+**Breaking (below v1): a `Set` compares names by ONE equivalence relation,
+everywhere.** Supersedes the choice of v0.18.0 (#44, 2026-11-05) and the "Not
+changed" note of v0.24.0. Refs #57.
+
+- **Old rule.** `Set.Identities` compared names byte for byte: "Alice" in a
+  second source and "alice" in the first were two people, while `ldapdir`
+  already refused Alice/alice inside one LDAP source as ambiguous. `Members` and
+  `Expand` dropped repeats byte for byte too.
+- **New rule.** Two names are the same person when the LDAP equality rule of uid
+  (`caseIgnoreMatch`, RFC 4518 preparation; `schema.EqualityKey` of go-authn/ldap)
+  calls them equal. It is used by the duplicate check within a source
+  (`ErrAmbiguous`, as before), by the cross-source union, by `Members` and by
+  `Expand`. The first source that knows a CLASS owns it; a later member of the
+  class is left out, not an error. The identity keeps the spelling of its owning
+  source.
+- **A shadowed variant is reported.** `Set.Shadowed()` lists, after
+  `Identities`, each later spelling that an earlier source's person shadowed
+  (`Shadow{Name, Source, Owner, By}`). The same spelling in two sources is the
+  documented override and is not listed.
+- **A name with no key is refused**, never compared as bytes: `ErrBadName` from
+  `Identities`, `Members` and `Expand`, for text that is not UTF-8 and for an
+  empty or all-space name.
+- Needs a server that has no two people whose names differ only by case or
+  insignificant space across its sources; one that has now loses the later one
+  (see `Shadowed`).
+
 ## v0.25.0
 
 Security fixes to `ldapdir` (2026-11-21 audit). Needs go-authn/ldap v0.15.0.

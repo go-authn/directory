@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // A Source is somewhere people are kept.
@@ -78,11 +79,13 @@ type GroupObjectClasser interface {
 var ErrNoSuchGroup = errors.New("directory: no such group")
 
 // ErrAmbiguous is what a source's Identities returns when one name is held by
-// more than one entry of the SAME source (two LDAP entries with one uid): a
-// name that is not one person is never resolved by picking one.
+// more than one entry of the SAME source (two LDAP entries with one uid, or
+// "Alice" and "alice"): a name that is not one person is never resolved by
+// picking one.
 //
-// Across sources it is not an error: the first source that knows a name owns
-// it, which is how a local file overrides a directory.
+// Across sources it is not an error: the first source that knows a name, up to
+// the equivalence of the LDAP rule for uid, owns it, which is how a local file
+// overrides a directory.
 var ErrAmbiguous = errors.New("directory: the name is held by more than one entry")
 
 // ErrEmptyGroup is what Expand returns for a group a source HAS, with nobody
@@ -100,6 +103,9 @@ var ErrEmptyGroup = errors.New("directory: the group has no members")
 // local file override a directory rather than the other way round.
 type Set struct {
 	sources []Source
+
+	mu       sync.Mutex
+	shadowed []Shadow // of the last successful Identities
 }
 
 // NewSet reads these sources, in this order.
@@ -119,9 +125,22 @@ func (s *Set) Describe() string {
 	return strings.Join(names, ", then ")
 }
 
+// Identities is everybody the sources know, one per EQUIVALENCE CLASS of
+// names: two names are the same person when the LDAP equality rule of uid
+// (caseIgnoreMatch) calls them equal, so "Alice" and "alice " are one person,
+// here and in every other place a Set compares names. Before v0.26.0 names were
+// compared byte for byte across sources.
+//
+// A class held twice by one source is [ErrAmbiguous]; a name with no key is
+// [ErrBadName]. The first source that knows a class owns it, and a later
+// source's member of the class is left out, not an error; a spelling that
+// differs from the owner's is listed by [Set.Shadowed]. The identity keeps the
+// spelling of the source that owns it.
 func (s *Set) Identities() ([]*Identity, error) {
+	type owner struct{ name, source string }
 	var out []*Identity
-	seen := map[string]bool{}
+	var shadowed []Shadow
+	seen := map[string]owner{}
 	for _, src := range s.sources {
 		ids, err := src.Identities()
 		if err != nil {
@@ -129,22 +148,32 @@ func (s *Set) Identities() ([]*Identity, error) {
 		}
 		here := make(map[string]bool, len(ids))
 		for _, id := range ids {
-			if here[id.name] {
+			key, err := nameKey(id.name)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", src.Describe(), err)
+			}
+			if here[key] {
 				return nil, fmt.Errorf("%s: %w: %q", src.Describe(), ErrAmbiguous, id.name)
 			}
-			here[id.name] = true
-			if seen[id.name] {
+			here[key] = true
+			if own, dup := seen[key]; dup {
 				// Deliberately not an error: adding somebody to LDAP must not
 				// break a server that has them written down locally.
+				if own.name != id.name {
+					shadowed = append(shadowed, Shadow{Name: id.name, Source: src.Describe(), Owner: own.name, By: own.source})
+				}
 				continue
 			}
-			seen[id.name] = true
+			seen[key] = owner{id.name, src.Describe()}
 			if id.where == "" {
 				id.where = src.Describe()
 			}
 			out = append(out, id)
 		}
 	}
+	s.mu.Lock()
+	s.shadowed = shadowed
+	s.mu.Unlock()
 	return out, nil
 }
 
@@ -175,25 +204,21 @@ func (s *Set) Members(group string) ([]string, error) {
 			members = make([]string, 0, len(got)) // the usual case is one source
 		}
 		for _, m := range got {
-			// A set once the list is long: a group of thousands made this
-			// quadratic. The order kept is the order of first appearance.
-			if seen != nil {
-				if _, dup := seen[m]; dup {
-					continue
-				}
-				seen[m] = struct{}{}
-			} else {
-				if slices.Contains(members, m) {
-					continue
-				}
-				if len(members) >= 64 {
-					seen = make(map[string]struct{}, 2*len(members))
-					for _, x := range members {
-						seen[x] = struct{}{}
-					}
-					seen[m] = struct{}{}
-				}
+			// Members are names, so they repeat by the same equivalence as
+			// Identities: "Alice" and "alice" are one member, and the first
+			// spelling is kept. A set, because a group of thousands made a
+			// list scan quadratic. The order kept is that of first appearance.
+			key, err := nameKey(m)
+			if err != nil {
+				return nil, fmt.Errorf("%s: group %q: %w", src.Describe(), group, err)
 			}
+			if seen == nil {
+				seen = make(map[string]struct{}, len(got))
+			}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
 			members = append(members, m)
 		}
 	}
@@ -365,14 +390,23 @@ func IsGroup(name string) bool { return strings.HasPrefix(name, GroupPrefix) }
 // works.
 func Expand(names []string, src Source) ([]string, error) {
 	var out []string
-	add := func(name string) {
-		if !slices.Contains(out, name) {
+	seen := map[string]struct{}{}
+	add := func(name string) error {
+		key, err := nameKey(name)
+		if err != nil {
+			return err
+		}
+		if _, dup := seen[key]; !dup {
+			seen[key] = struct{}{}
 			out = append(out, name)
 		}
+		return nil
 	}
 	for _, name := range names {
 		if !IsGroup(name) {
-			add(name)
+			if err := add(name); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		group := strings.TrimPrefix(name, GroupPrefix)
@@ -384,7 +418,9 @@ func Expand(names []string, src Source) ([]string, error) {
 			return nil, fmt.Errorf("%w: %q: nobody would be allowed", ErrEmptyGroup, group)
 		}
 		for _, m := range members {
-			add(m)
+			if err := add(m); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return out, nil

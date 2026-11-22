@@ -484,7 +484,10 @@ and a connection after the answer was given.
 The first source that knows a name owns it. A site with its people in LDAP and
 one service account written down locally should not have to put the service
 account in LDAP — and adding somebody to LDAP must not break a server that has
-them written down. That is across sources: **within one source a name held by
+them written down. Names are the same person under the LDAP rule for uid
+(`caseIgnoreMatch`: "Alice", "alice" and "alice " are one name), in `Identities`,
+`Members` and `Expand` alike; a later source's variant is left out and listed by
+`Set.Shadowed()`, and a name with no key is `ErrBadName`. That is across sources: **within one source a name held by
 two entries is `ErrAmbiguous`**, never a pick (two LDAP entries with one uid,
 compared without case, fail `Identities` naming both DNs). Group membership, by contrast, is the **union**: a group can
 have people from both, and returning only the first half would silently exclude
